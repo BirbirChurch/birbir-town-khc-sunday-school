@@ -17,10 +17,29 @@ export const downloadCSV = (csvContent: string, filename: string) => {
   URL.revokeObjectURL(link.href);
 };
 
-export const downloadXLSX = (data: (string | number)[][], filename: string) => {
+/**
+ * Download single sheet XLSX file
+ */
+export const downloadXLSX = (data: (string | number)[][], filename: string, sheetName = 'ውጤት መዝገብ') => {
   const worksheet = XLSX.utils.aoa_to_sheet(data);
   const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, worksheet, 'Sheet1');
+  XLSX.utils.book_append_sheet(workbook, worksheet, sheetName.substring(0, 31));
+  XLSX.writeFile(workbook, filename.endsWith('.xlsx') ? filename : `${filename}.xlsx`);
+};
+
+/**
+ * Download multi-sheet XLSX file
+ */
+export const downloadMultiSheetXLSX = (
+  sheets: { name: string; data: (string | number)[][] }[],
+  filename: string
+) => {
+  const workbook = XLSX.utils.book_new();
+  sheets.forEach((sh, idx) => {
+    const ws = XLSX.utils.aoa_to_sheet(sh.data);
+    const validName = (sh.name || `ክፍል_${idx + 1}`).substring(0, 31);
+    XLSX.utils.book_append_sheet(workbook, ws, validName);
+  });
   XLSX.writeFile(workbook, filename.endsWith('.xlsx') ? filename : `${filename}.xlsx`);
 };
 
@@ -49,49 +68,162 @@ export const parseCSVLine = (line: string): string[] => {
   return result;
 };
 
+export interface SheetData {
+  sheetName: string;
+  rows: string[][];
+}
+
+export interface ParsedWorkbookResult {
+  isExcel: boolean;
+  sheets: SheetData[];
+}
+
 /**
- * Helper to read any Excel (.xlsx, .xls) or CSV/text file asynchronously.
- * Uses SheetJS (xlsx) for native Excel support and falls back to multi-encoding TextDecoder (UTF-8, UTF-16LE, UTF-16BE) for CSVs.
+ * Normalizes class strings for fuzzy comparison:
+ * Removes spaces, dashes, dots, underscores, turns to lower case
  */
-export const readCSVFile = (file: File): Promise<string[][]> => {
+export const normalizeClassString = (str: string): string => {
+  return (str || '')
+    .toString()
+    .toLowerCase()
+    .replace(/[\s\-_./\\#:]+/g, '')
+    .trim();
+};
+
+/**
+ * Intelligent class matcher: finds best matching class from classList
+ */
+export const matchClassName = (raw: string, classList: string[]): string | null => {
+  if (!raw || typeof raw !== 'string') return null;
+  const rawTrimmed = raw.trim();
+  if (!rawTrimmed) return null;
+
+  // 1. Direct exact match
+  const exact = classList.find((c) => c === rawTrimmed);
+  if (exact) return exact;
+
+  // 2. Case-insensitive exact match
+  const caseMatch = classList.find((c) => c.toLowerCase() === rawTrimmed.toLowerCase());
+  if (caseMatch) return caseMatch;
+
+  const normalizedRaw = normalizeClassString(rawTrimmed);
+
+  // 3. Normalized exact match (e.g. "1ኛክፍልሀ" vs "1ኛ ክፍል ሀ")
+  const normMatch = classList.find((c) => normalizeClassString(c) === normalizedRaw);
+  if (normMatch) return normMatch;
+
+  // 4. Special Amharic shorthands
+  // "ማቆያ" or "መዋዕለ" or "ህፃናት" or "kindergarten" or "kg" -> "ማቆያ ክፍል"
+  if (
+    normalizedRaw.includes('ማቆያ') ||
+    normalizedRaw.includes('መዋዕለ') ||
+    normalizedRaw.includes('ህፃናት') ||
+    normalizedRaw.includes('ሕፃናት') ||
+    normalizedRaw === 'kg' ||
+    normalizedRaw === 'kindergarten'
+  ) {
+    const makoya = classList.find((c) => c.includes('ማቆያ') || c.includes('መዋዕለ'));
+    if (makoya) return makoya;
+  }
+
+  // "ደረጃ 1" or "ደረጃ 2" or "level 1"
+  if (normalizedRaw.includes('ደረጃ1') || normalizedRaw.includes('level1') || normalizedRaw === 'ደ1') {
+    const d1 = classList.find((c) => c.includes('ደረጃ 1') || c.includes('ደረጃ1'));
+    if (d1) return d1;
+  }
+  if (normalizedRaw.includes('ደረጃ2') || normalizedRaw.includes('level2') || normalizedRaw === 'ደ2') {
+    const d2 = classList.find((c) => c.includes('ደረጃ 2') || c.includes('ደረጃ2'));
+    if (d2) return d2;
+  }
+
+  // Match e.g. "1ኛ ሀ", "1ኛሀ", "1ሀ", "grade1a", "g1a", "1a" -> "1ኛ ክፍል ሀ"
+  for (const c of classList) {
+    const normC = normalizeClassString(c);
+    // Strip "ክፍል" from class: e.g. "1ኛክፍልሀ" -> "1ኛሀ"
+    const strippedC = normC.replace('ክፍል', '');
+    if (normalizedRaw === strippedC || normalizedRaw.includes(strippedC) || strippedC.includes(normalizedRaw)) {
+      return c;
+    }
+  }
+
+  // English "grade 1 a" -> "1ኛ ክፍል ሀ"
+  const gradeEngMatch = rawTrimmed.match(/(?:grade|g)?\s*(\d+)\s*([a-bA-Bሀለ])?/i);
+  if (gradeEngMatch) {
+    const num = gradeEngMatch[1];
+    let letter = (gradeEngMatch[2] || '').toUpperCase();
+    if (letter === 'A' || letter === 'ሀ') letter = 'ሀ';
+    else if (letter === 'B' || letter === 'ለ') letter = 'ለ';
+
+    const candidate = classList.find((c) => {
+      const hasNum = c.includes(num);
+      const hasLetter = letter ? c.includes(letter) : true;
+      return hasNum && hasLetter;
+    });
+    if (candidate) return candidate;
+  }
+
+  return null;
+};
+
+/**
+ * Reads any Excel (.xlsx, .xls) or CSV/text file and returns all parsed sheets
+ */
+export const readExcelOrCSVWorkbook = (file: File): Promise<ParsedWorkbookResult> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = (event) => {
       try {
         const buffer = event.target?.result as ArrayBuffer;
-        if (!buffer || buffer.byteLength === 0) return resolve([]);
+        if (!buffer || buffer.byteLength === 0) {
+          return resolve({ isExcel: false, sheets: [] });
+        }
 
-        // Try parsing with SheetJS (XLSX) first
+        // Try parsing with SheetJS (XLSX/XLS)
         try {
           const workbook = XLSX.read(buffer, { type: 'array', codepage: 65001 });
-          const firstSheetName = workbook.SheetNames[0];
-          if (firstSheetName) {
-            const worksheet = workbook.Sheets[firstSheetName];
-            const rawRows = XLSX.utils.sheet_to_json<(string | number)[]>(worksheet, {
-              header: 1,
-              raw: false,
-              defval: ''
+          if (workbook.SheetNames && workbook.SheetNames.length > 0) {
+            const parsedSheets: SheetData[] = [];
+
+            workbook.SheetNames.forEach((sheetName) => {
+              const worksheet = workbook.Sheets[sheetName];
+              if (!worksheet) return;
+
+              const rawRows = XLSX.utils.sheet_to_json<(string | number)[]>(worksheet, {
+                header: 1,
+                raw: false,
+                defval: ''
+              });
+
+              if (rawRows && rawRows.length > 0) {
+                const cleanRows = rawRows
+                  .map((row) =>
+                    Array.isArray(row)
+                      ? row.map((cell) => (cell !== null && cell !== undefined ? String(cell).trim() : ''))
+                      : []
+                  )
+                  .filter((row) => row.some((cell) => cell.length > 0));
+
+                if (cleanRows.length > 0) {
+                  parsedSheets.push({
+                    sheetName,
+                    rows: cleanRows
+                  });
+                }
+              }
             });
 
-            if (rawRows && rawRows.length > 0) {
-              const cleanRows = rawRows
-                .map((row) =>
-                  Array.isArray(row)
-                    ? row.map((cell) => (cell !== null && cell !== undefined ? String(cell).trim() : ''))
-                    : []
-                )
-                .filter((row) => row.some((cell) => cell.length > 0));
-
-              if (cleanRows.length > 0) {
-                return resolve(cleanRows);
-              }
+            if (parsedSheets.length > 0) {
+              return resolve({
+                isExcel: true,
+                sheets: parsedSheets
+              });
             }
           }
         } catch {
-          // SheetJS parse failed, proceed to custom BOM / multi-encoding text decoding
+          // Fall through to text/CSV decoding
         }
 
-        // Custom multi-encoding fallback for text/CSV
+        // Fallback for CSV / TXT files
         const bytes = new Uint8Array(buffer);
         let text = '';
 
@@ -119,8 +251,14 @@ export const readCSVFile = (file: File): Promise<string[][]> => {
         }
 
         const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
-        const parsed = lines.map((l) => parseCSVLine(l));
-        resolve(parsed);
+        const parsedRows = lines.map((l) => parseCSVLine(l));
+        const cleanRows = parsedRows.filter((row) => row.some((cell) => cell.length > 0));
+
+        const baseFileName = file.name.replace(/\.[^/.]+$/, '');
+        resolve({
+          isExcel: false,
+          sheets: [{ sheetName: baseFileName, rows: cleanRows }]
+        });
       } catch (err) {
         reject(err);
       }
@@ -130,3 +268,208 @@ export const readCSVFile = (file: File): Promise<string[][]> => {
   });
 };
 
+/**
+ * Backward compatible readCSVFile that delegates to readExcelOrCSVWorkbook
+ */
+export const readCSVFile = async (file: File): Promise<string[][]> => {
+  const result = await readExcelOrCSVWorkbook(file);
+  if (result.sheets.length > 0) {
+    return result.sheets[0].rows;
+  }
+  return [];
+};
+
+export interface ParsedStudentRow {
+  name: string;
+  className?: string; // If detected in row
+  age: string;
+  gender: string;
+  m1: number;
+  m2: number;
+  m3: number;
+  m4: number;
+  m5: number;
+  m6: number;
+  m7: number;
+}
+
+/**
+ * Intelligent row parser that detects columns (Name, Class, Age, Gender, Assessments M1-M7)
+ */
+export const parseStudentRowsWithHeaders = (
+  rows: string[][],
+  defaultClassName: string,
+  classList: string[]
+): {
+  students: ParsedStudentRow[];
+  detectedClasses: string[];
+  hasClassColumn: boolean;
+} => {
+  if (!rows || rows.length === 0) {
+    return { students: [], detectedClasses: [], hasClassColumn: false };
+  }
+
+  // Find header row in first 3 rows
+  let headerRowIndex = -1;
+  let colIdxName = -1;
+  let colIdxClass = -1;
+  let colIdxAge = -1;
+  let colIdxGender = -1;
+  let colIdxM1 = -1;
+  let colIdxM2 = -1;
+  let colIdxM3 = -1;
+  let colIdxM4 = -1;
+  let colIdxM5 = -1;
+  let colIdxM6 = -1;
+  let colIdxM7 = -1;
+
+  for (let r = 0; r < Math.min(rows.length, 4); r++) {
+    const row = rows[r];
+    const rowStr = row.join(' ').toLowerCase();
+
+    if (
+      rowStr.includes('ስም') ||
+      rowStr.includes('name') ||
+      rowStr.includes('ተማሪ') ||
+      rowStr.includes('ክፍል') ||
+      rowStr.includes('ተ.ቁ')
+    ) {
+      headerRowIndex = r;
+      row.forEach((cell, idx) => {
+        const cLower = cell.toLowerCase().trim();
+
+        if (colIdxName === -1 && (cLower.includes('ስም') || cLower.includes('name') || cLower === 'ተማሪ')) {
+          colIdxName = idx;
+        } else if (colIdxClass === -1 && (cLower.includes('ክፍል') || cLower.includes('class') || cLower.includes('grade') || cLower.includes('ደረጃ'))) {
+          colIdxClass = idx;
+        } else if (colIdxAge === -1 && (cLower.includes('ዕድሜ') || cLower.includes('እድሜ') || cLower === 'age')) {
+          colIdxAge = idx;
+        } else if (colIdxGender === -1 && (cLower.includes('ፆታ') || cLower.includes('ጾታ') || cLower === 'gender' || cLower === 'sex')) {
+          colIdxGender = idx;
+        } else if (colIdxM1 === -1 && (cLower.includes('ምዘና 1') || cLower === 'ምዘና1' || cLower === 'm1' || cLower.includes('quiz 1') || cLower.includes('test 1'))) {
+          colIdxM1 = idx;
+        } else if (colIdxM2 === -1 && (cLower.includes('ምዘና 2') || cLower === 'ምዘና2' || cLower === 'm2' || cLower.includes('quiz 2') || cLower.includes('test 2'))) {
+          colIdxM2 = idx;
+        } else if (colIdxM3 === -1 && (cLower.includes('ምዘና 3') || cLower === 'ምዘና3' || cLower === 'm3' || cLower.includes('quiz 3') || cLower.includes('test 3'))) {
+          colIdxM3 = idx;
+        } else if (colIdxM4 === -1 && (cLower.includes('ምዘና 4') || cLower === 'ምዘና4' || cLower === 'm4' || cLower.includes('mid') || cLower.includes('test 4'))) {
+          colIdxM4 = idx;
+        } else if (colIdxM5 === -1 && (cLower.includes('ምዘና 5') || cLower === 'ምዘና5' || cLower === 'm5' || cLower.includes('quiz 4') || cLower.includes('test 5'))) {
+          colIdxM5 = idx;
+        } else if (colIdxM6 === -1 && (cLower.includes('ምዘና 6') || cLower === 'ምዘና6' || cLower === 'm6' || cLower.includes('quiz 5') || cLower.includes('test 6'))) {
+          colIdxM6 = idx;
+        } else if (colIdxM7 === -1 && (cLower.includes('ምዘና 7') || cLower === 'ምዘና7' || cLower === 'm7' || cLower.includes('final') || cLower.includes('ማጠቃለያ'))) {
+          colIdxM7 = idx;
+        }
+      });
+      break;
+    }
+  }
+
+  const startIdx = headerRowIndex !== -1 ? headerRowIndex + 1 : 0;
+  const students: ParsedStudentRow[] = [];
+  const foundClassesSet = new Set<string>();
+
+  for (let i = startIdx; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row || row.length === 0) continue;
+
+    let name = '';
+    let rowClass = '';
+    let age = '7';
+    let gender = 'ወ';
+    let m1 = 0, m2 = 0, m3 = 0, m4 = 0, m5 = 0, m6 = 0, m7 = 0;
+
+    if (headerRowIndex !== -1 && colIdxName !== -1) {
+      name = row[colIdxName] || '';
+      if (colIdxClass !== -1 && row[colIdxClass]) {
+        rowClass = row[colIdxClass].trim();
+      }
+      if (colIdxAge !== -1 && row[colIdxAge]) {
+        age = row[colIdxAge].trim() || '7';
+      }
+      if (colIdxGender !== -1 && row[colIdxGender]) {
+        const gRaw = row[colIdxGender].trim();
+        gender = gRaw.includes('ሴ') || gRaw.toLowerCase().startsWith('f') ? 'ሴ' : 'ወ';
+      }
+      if (colIdxM1 !== -1) m1 = parseFloat(row[colIdxM1]) || 0;
+      if (colIdxM2 !== -1) m2 = parseFloat(row[colIdxM2]) || 0;
+      if (colIdxM3 !== -1) m3 = parseFloat(row[colIdxM3]) || 0;
+      if (colIdxM4 !== -1) m4 = parseFloat(row[colIdxM4]) || 0;
+      if (colIdxM5 !== -1) m5 = parseFloat(row[colIdxM5]) || 0;
+      if (colIdxM6 !== -1) m6 = parseFloat(row[colIdxM6]) || 0;
+      if (colIdxM7 !== -1) m7 = parseFloat(row[colIdxM7]) || 0;
+    } else {
+      // No recognized header row: inspect first columns heuristic
+      // Format 1: [Name, Age, Gender, m1, ...]
+      // Format 2: [No, Name, Age, Gender, m1, ...]
+      // Format 3: [No, Name, Class, Age, Gender, m1, ...]
+      let nameIdx = 0;
+      if (!isNaN(Number(row[0])) && row.length > 1) {
+        nameIdx = 1;
+      }
+
+      name = row[nameIdx] || '';
+
+      // Check if subsequent column is a Class name
+      const potentialClassCol1 = row[nameIdx + 1] || '';
+      const matchedAsClass1 = matchClassName(potentialClassCol1, classList);
+
+      if (matchedAsClass1) {
+        rowClass = matchedAsClass1;
+        age = row[nameIdx + 2] || '7';
+        const gRaw = row[nameIdx + 3] || 'ወ';
+        gender = gRaw.includes('ሴ') || gRaw.toLowerCase().startsWith('f') ? 'ሴ' : 'ወ';
+        m1 = parseFloat(row[nameIdx + 4]) || 0;
+        m2 = parseFloat(row[nameIdx + 5]) || 0;
+        m3 = parseFloat(row[nameIdx + 6]) || 0;
+        m4 = parseFloat(row[nameIdx + 7]) || 0;
+        m5 = parseFloat(row[nameIdx + 8]) || 0;
+        m6 = parseFloat(row[nameIdx + 9]) || 0;
+        m7 = parseFloat(row[nameIdx + 10]) || 0;
+      } else {
+        age = row[nameIdx + 1] || '7';
+        const gRaw = row[nameIdx + 2] || 'ወ';
+        gender = gRaw.includes('ሴ') || gRaw.toLowerCase().startsWith('f') ? 'ሴ' : 'ወ';
+        m1 = parseFloat(row[nameIdx + 3]) || 0;
+        m2 = parseFloat(row[nameIdx + 4]) || 0;
+        m3 = parseFloat(row[nameIdx + 5]) || 0;
+        m4 = parseFloat(row[nameIdx + 6]) || 0;
+        m5 = parseFloat(row[nameIdx + 7]) || 0;
+        m6 = parseFloat(row[nameIdx + 8]) || 0;
+        m7 = parseFloat(row[nameIdx + 9]) || 0;
+      }
+    }
+
+    // Filter out rows that are actually header leftovers or empty names
+    if (!name || name.trim().length === 0) continue;
+    if (name.includes('ተ.ቁ') || name.includes('የተማሪ ስም') || name.toLowerCase() === 'name') continue;
+
+    // Match class if found
+    let finalClass = defaultClassName;
+    if (rowClass) {
+      const matched = matchClassName(rowClass, classList);
+      if (matched) {
+        finalClass = matched;
+        foundClassesSet.add(matched);
+      } else {
+        finalClass = rowClass;
+        foundClassesSet.add(rowClass);
+      }
+    }
+
+    students.push({
+      name: name.trim(),
+      className: rowClass ? finalClass : undefined,
+      age: age || '7',
+      gender,
+      m1, m2, m3, m4, m5, m6, m7
+    });
+  }
+
+  return {
+    students,
+    detectedClasses: Array.from(foundClassesSet),
+    hasClassColumn: colIdxClass !== -1 || foundClassesSet.size > 0
+  };
+};

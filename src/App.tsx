@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   GraduationCap,
   CalendarCheck2,
@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import { Role, Teacher, Student, AbsenteeRecord, ChoirMember, SpiritualMember, AnnualPlanItem, AppData } from './types';
 import { CLASS_LIST, DEFAULT_ANNUAL_PLAN } from './constants/initialData';
-import { subscribeToAppData, syncAppDataToFirebase, countStudentsInData, exportBackupJSON } from './services/firebase';
+import { subscribeToAppData, syncAppDataToFirebase, saveToLocalStorage, countStudentsInData, exportBackupJSON } from './services/firebase';
 import { Header } from './components/Header';
 import { LoginPortal } from './components/LoginPortal';
 import { ClassesTab } from './components/ClassesTab';
@@ -60,18 +60,70 @@ export default function App() {
     };
   }, []);
 
-  // Update cloud helper
-  const updateAppData = useCallback((updater: (prev: AppData) => AppData) => {
-    setAppData((prev) => {
-      if (!prev) return prev;
-      const updated = updater(prev);
-      setSyncStatus('saving');
-      syncAppDataToFirebase(updated)
-        .then(() => setSyncStatus('connected'))
-        .catch(() => setSyncStatus('offline'));
-      return updated;
-    });
+  const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const latestDataRef = useRef<AppData | null>(null);
+
+  // Keep latestDataRef in sync with state
+  useEffect(() => {
+    latestDataRef.current = appData;
+  }, [appData]);
+
+  // Flush any pending unsynced changes if page is closed or reloaded
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (syncTimeoutRef.current && latestDataRef.current) {
+        clearTimeout(syncTimeoutRef.current);
+        syncAppDataToFirebase(latestDataRef.current);
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      if (syncTimeoutRef.current && latestDataRef.current) {
+        clearTimeout(syncTimeoutRef.current);
+        syncAppDataToFirebase(latestDataRef.current);
+      }
+    };
   }, []);
+
+  // Instant local state update with debounced background cloud sync
+  const updateAppData = useCallback(
+    (updater: (prev: AppData) => AppData, options?: { immediate?: boolean }) => {
+      setAppData((prev) => {
+        if (!prev) return prev;
+        const updated = updater(prev);
+        latestDataRef.current = updated;
+
+        // 1. Immediately save to localStorage (0ms persistence)
+        saveToLocalStorage(updated);
+
+        // 2. Debounce cloud sync to avoid freezing UI or overloading network
+        if (syncTimeoutRef.current) {
+          clearTimeout(syncTimeoutRef.current);
+          syncTimeoutRef.current = null;
+        }
+
+        if (options?.immediate) {
+          setSyncStatus('saving');
+          syncAppDataToFirebase(updated)
+            .then(() => setSyncStatus('connected'))
+            .catch(() => setSyncStatus('offline'));
+        } else {
+          syncTimeoutRef.current = setTimeout(() => {
+            if (latestDataRef.current) {
+              setSyncStatus('saving');
+              syncAppDataToFirebase(latestDataRef.current)
+                .then(() => setSyncStatus('connected'))
+                .catch(() => setSyncStatus('offline'));
+            }
+          }, 600);
+        }
+
+        return updated;
+      });
+    },
+    []
+  );
 
   // Handlers for Login
   const handleLoginSuccess = (role: Role, teacher?: Teacher) => {
@@ -93,10 +145,13 @@ export default function App() {
 
   // Add academic year
   const handleAddYear = (newYear: string) => {
-    updateAppData((prev) => ({
-      ...prev,
-      years: prev.years.includes(newYear) ? prev.years : [...prev.years, newYear]
-    }));
+    updateAppData(
+      (prev) => ({
+        ...prev,
+        years: prev.years.includes(newYear) ? prev.years : [...prev.years, newYear]
+      }),
+      { immediate: true }
+    );
     setCurrentYear(newYear);
   };
 
@@ -131,82 +186,160 @@ export default function App() {
       id: Date.now()
     };
 
-    updateAppData((prev) => {
-      const yearStudents = prev.students?.[currentYear] || {};
-      const classStudents = yearStudents[selectedClass] || [];
+    updateAppData(
+      (prev) => {
+        const yearStudents = prev.students?.[currentYear] || {};
+        const classStudents = yearStudents[selectedClass] || [];
 
-      return {
-        ...prev,
-        students: {
-          ...prev.students,
-          [currentYear]: {
-            ...yearStudents,
-            [selectedClass]: [...classStudents, studentWithId]
+        return {
+          ...prev,
+          students: {
+            ...prev.students,
+            [currentYear]: {
+              ...yearStudents,
+              [selectedClass]: [...classStudents, studentWithId]
+            }
           }
-        }
-      };
-    });
+        };
+      },
+      { immediate: true }
+    );
+  };
+
+  const handleAddStudentsBatch = (
+    newStudents: Omit<Student, 'id'>[],
+    targetClass?: string,
+    replaceExisting?: boolean
+  ) => {
+    if (!newStudents.length) return;
+    const destClass = targetClass || selectedClass;
+    let baseId = Date.now();
+    const studentsWithIds: Student[] = newStudents.map((s) => ({
+      ...s,
+      id: baseId++
+    }));
+
+    updateAppData(
+      (prev) => {
+        const yearStudents = { ...(prev.students?.[currentYear] || {}) };
+        const existingClassStudents = replaceExisting ? [] : (yearStudents[destClass] || []);
+
+        return {
+          ...prev,
+          students: {
+            ...prev.students,
+            [currentYear]: {
+              ...yearStudents,
+              [destClass]: [...existingClassStudents, ...studentsWithIds]
+            }
+          }
+        };
+      },
+      { immediate: true }
+    );
+  };
+
+  const handleAddStudentsMultiClass = (
+    studentsByClass: { [className: string]: Omit<Student, 'id'>[] },
+    replaceExisting?: boolean
+  ) => {
+    if (!Object.keys(studentsByClass).length) return;
+    let baseId = Date.now();
+
+    updateAppData(
+      (prev) => {
+        const yearStudents = { ...(prev.students?.[currentYear] || {}) };
+
+        Object.entries(studentsByClass).forEach(([cName, list]) => {
+          if (!list || list.length === 0) return;
+          const existing = replaceExisting ? [] : (yearStudents[cName] || []);
+          const withIds: Student[] = list.map((s) => ({
+            ...s,
+            id: baseId++
+          }));
+          yearStudents[cName] = [...existing, ...withIds];
+        });
+
+        return {
+          ...prev,
+          students: {
+            ...prev.students,
+            [currentYear]: yearStudents
+          }
+        };
+      },
+      { immediate: true }
+    );
   };
 
   const handleDeleteStudent = (studentId: number) => {
-    updateAppData((prev) => {
-      const yearStudents = prev.students?.[currentYear] || {};
-      const classStudents = yearStudents[selectedClass] || [];
+    updateAppData(
+      (prev) => {
+        const yearStudents = prev.students?.[currentYear] || {};
+        const classStudents = yearStudents[selectedClass] || [];
 
-      return {
-        ...prev,
-        students: {
-          ...prev.students,
-          [currentYear]: {
-            ...yearStudents,
-            [selectedClass]: classStudents.filter((s) => s.id !== studentId)
+        return {
+          ...prev,
+          students: {
+            ...prev.students,
+            [currentYear]: {
+              ...yearStudents,
+              [selectedClass]: classStudents.filter((s) => s.id !== studentId)
+            }
           }
-        }
-      };
-    });
+        };
+      },
+      { immediate: true }
+    );
   };
 
   const handleClearClassStudents = (className: string) => {
-    updateAppData((prev) => {
-      const yearStudents = prev.students?.[currentYear] || {};
-      return {
-        ...prev,
-        students: {
-          ...prev.students,
-          [currentYear]: {
-            ...yearStudents,
-            [className]: []
+    updateAppData(
+      (prev) => {
+        const yearStudents = prev.students?.[currentYear] || {};
+        return {
+          ...prev,
+          students: {
+            ...prev.students,
+            [currentYear]: {
+              ...yearStudents,
+              [className]: []
+            }
           }
-        }
-      };
-    });
+        };
+      },
+      { immediate: true }
+    );
   };
 
   const handleClearClassScores = (className: string) => {
-    updateAppData((prev) => {
-      const yearStudents = prev.students?.[currentYear] || {};
-      const classStudents = yearStudents[className] || [];
-      const cleared = classStudents.map((s) => ({
-        ...s,
-        m1: 0,
-        m2: 0,
-        m3: 0,
-        m4: 0,
-        m5: 0,
-        m6: 0,
-        m7: 0
-      }));
-      return {
-        ...prev,
-        students: {
-          ...prev.students,
-          [currentYear]: {
-            ...yearStudents,
-            [className]: cleared
+    updateAppData(
+      (prev) => {
+        const yearStudents = prev.students?.[currentYear] || {};
+        const classStudents = yearStudents[className] || [];
+        const cleared = classStudents.map((s) => ({
+          ...s,
+          m1: 0,
+          m2: 0,
+          m3: 0,
+          m4: 0,
+          m5: 0,
+          m6: 0,
+          m7: 0
+        }));
+        return {
+          ...prev,
+          students: {
+            ...prev.students,
+            [currentYear]: {
+              ...yearStudents,
+              [className]: cleared
+            }
           }
-        }
-      };
-    });
+        };
+      },
+      { immediate: true }
+    );
   };
 
   // Attendance handlers
@@ -504,6 +637,8 @@ export default function App() {
                   students={currentClassStudents}
                   onUpdateStudent={handleUpdateStudent}
                   onAddStudent={handleAddStudent}
+                  onAddStudentsBatch={handleAddStudentsBatch}
+                  onAddStudentsMultiClass={handleAddStudentsMultiClass}
                   onDeleteStudent={handleDeleteStudent}
                   onClearClassStudents={handleClearClassStudents}
                   onClearClassScores={handleClearClassScores}

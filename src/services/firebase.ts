@@ -262,6 +262,8 @@ export let currentDiagnostic: SyncDiagnosticInfo = {
   totalStudentsLocal: 0
 };
 
+export const CLIENT_SESSION_ID = `client_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
 export const subscribeToAppData = (
   onData: (data: AppData) => void,
   onStatusChange: (status: 'connected' | 'saving' | 'offline' | 'error', diag?: SyncDiagnosticInfo) => void
@@ -277,7 +279,46 @@ export const subscribeToAppData = (
 
   const handleRemoteData = (val: any) => {
     if (val && typeof val === 'object') {
+      // If this update was emitted by this very client session, skip re-render to prevent loopback echo and input lag
+      if (val._syncMeta && val._syncMeta.clientId === CLIENT_SESSION_ID) {
+        currentDiagnostic = {
+          status: 'connected',
+          projectId: profile.id,
+          projectLabel: profile.label,
+          databaseURL: profile.config.databaseURL,
+          lastSyncTime: new Date().toLocaleTimeString('am-ET')
+        };
+        onStatusChange('connected', currentDiagnostic);
+        return;
+      }
+
       const currentLocal = loadStoredLocalData();
+
+      // Safe per-year and per-class deep merge for students
+      const mergedStudents: AppData['students'] = {};
+      const localStudents = currentLocal.students || {};
+      const remoteStudents = (val.students && typeof val.students === 'object') ? val.students : {};
+
+      const allYears = Array.from(new Set([
+        ...Object.keys(localStudents),
+        ...Object.keys(remoteStudents)
+      ]));
+
+      allYears.forEach((yr) => {
+        const localClassMap = localStudents[yr] || {};
+        const remoteClassMap = remoteStudents[yr] || {};
+        const allClasses = Array.from(new Set([
+          ...Object.keys(localClassMap),
+          ...Object.keys(remoteClassMap)
+        ]));
+
+        mergedStudents[yr] = {};
+        allClasses.forEach((cls) => {
+          const remoteList = Array.isArray(remoteClassMap[cls]) ? remoteClassMap[cls] : [];
+          const localList = Array.isArray(localClassMap[cls]) ? localClassMap[cls] : [];
+          mergedStudents[yr][cls] = remoteList.length > 0 ? remoteList : localList;
+        });
+      });
 
       // Safe non-destructive merge: do NOT overwrite non-empty local records with empty remote ones!
       const mergedData: AppData = {
@@ -291,7 +332,7 @@ export const subscribeToAppData = (
         choirGroups: (val.choirGroups && val.choirGroups.length > 0) ? val.choirGroups : currentLocal.choirGroups,
         spiritualGroups: (val.spiritualGroups && val.spiritualGroups.length > 0) ? val.spiritualGroups : currentLocal.spiritualGroups,
         plans: (val.plans && val.plans.length > 0) ? val.plans : currentLocal.plans,
-        students: (val.students && Object.keys(val.students).length > 0) ? val.students : currentLocal.students,
+        students: Object.keys(mergedStudents).length > 0 ? mergedStudents : (currentLocal.students || {}),
         attendance: (val.attendance && val.attendance.length > 0) ? val.attendance : currentLocal.attendance,
         choirMembers: (val.choirMembers && val.choirMembers.length > 0) ? val.choirMembers : currentLocal.choirMembers,
         spiritualMembers: (val.spiritualMembers && val.spiritualMembers.length > 0) ? val.spiritualMembers : currentLocal.spiritualMembers,
@@ -411,10 +452,18 @@ export const syncAppDataToFirebase = async (data: AppData): Promise<boolean> => 
   saveToLocalStorage(data);
   let synced = false;
 
+  const payload = {
+    ...data,
+    _syncMeta: {
+      clientId: CLIENT_SESSION_ID,
+      timestamp: Date.now()
+    }
+  };
+
   if (rtdbInstance) {
     try {
       const dataRef = ref(rtdbInstance, DB_KEY);
-      await set(dataRef, data);
+      await set(dataRef, payload);
       synced = true;
       currentDiagnostic.lastSyncTime = new Date().toLocaleTimeString('am-ET');
     } catch (error: any) {
@@ -425,7 +474,7 @@ export const syncAppDataToFirebase = async (data: AppData): Promise<boolean> => 
   if (firestoreInstance) {
     try {
       const docRef = doc(firestoreInstance, 'church_data', DB_KEY);
-      await setDoc(docRef, data, { merge: true });
+      await setDoc(docRef, payload, { merge: true });
       synced = true;
     } catch {}
   }

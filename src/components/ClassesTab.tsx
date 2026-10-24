@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   UserPlus,
   Printer,
@@ -11,10 +11,22 @@ import {
   RotateCcw,
   Eraser,
   Compass,
-  ArrowDownUp
+  ArrowDownUp,
+  FileSpreadsheet,
+  FileCheck,
+  Layers,
+  HelpCircle,
+  Check,
+  AlertCircle
 } from 'lucide-react';
 import { Student, Teacher, Role } from '../types';
-import { downloadCSV, readCSVFile } from '../utils/csv';
+import {
+  downloadCSV,
+  downloadXLSX,
+  readExcelOrCSVWorkbook,
+  parseStudentRowsWithHeaders,
+  matchClassName
+} from '../utils/csv';
 
 interface ClassesTabProps {
   currentYear: string;
@@ -25,6 +37,15 @@ interface ClassesTabProps {
   students: Student[];
   onUpdateStudent: (student: Student) => void;
   onAddStudent: (student: Omit<Student, 'id'>) => void;
+  onAddStudentsBatch?: (
+    students: Omit<Student, 'id'>[],
+    targetClass?: string,
+    replaceExisting?: boolean
+  ) => void;
+  onAddStudentsMultiClass?: (
+    studentsByClass: { [className: string]: Omit<Student, 'id'>[] },
+    replaceExisting?: boolean
+  ) => void;
   onDeleteStudent: (studentId: number) => void;
   onClearClassStudents?: (className: string) => void;
   onClearClassScores?: (className: string) => void;
@@ -44,6 +65,8 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
   students,
   onUpdateStudent,
   onAddStudent,
+  onAddStudentsBatch,
+  onAddStudentsMultiClass,
   onDeleteStudent,
   onClearClassStudents,
   onClearClassScores,
@@ -60,13 +83,26 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
   const [newStudentAge, setNewStudentAge] = useState('7');
   const [newStudentGender, setNewStudentGender] = useState('ወ');
 
+  // Excel/CSV import modal and preview states
+  const [importPreview, setImportPreview] = useState<{
+    fileName: string;
+    isMultiClass: boolean;
+    totalStudents: number;
+    classesSummary: { className: string; count: number }[];
+    studentsByClass: { [className: string]: Omit<Student, 'id'>[] };
+    selectedClassCount: number;
+  } | null>(null);
+  const [importMode, setImportMode] = useState<'all_classes' | 'selected_only'>('all_classes');
+  const [replaceExisting, setReplaceExisting] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+
   const assignedTeacher = teachers.find((t) => t.assignedClass === selectedClass);
   const canEdit =
     currentUserRole === 'admin' ||
     (currentUserRole === 'teacher' && loggedInTeacher?.assignedClass === selectedClass);
 
-  // Configuration of 7 assessments with their max scores and styling
-  const assessmentsConfig = [
+  // Configuration of 7 assessments with their max scores and styling (memoized)
+  const assessmentsConfig = useMemo(() => [
     { key: 'm1' as const, label: 'ምዘና 1 (10)', max: 10, bg: 'bg-blue-50/40', inputFocus: 'focus:border-blue-600' },
     { key: 'm2' as const, label: 'ምዘና 2 (10)', max: 10, bg: 'bg-blue-50/40', inputFocus: 'focus:border-blue-600' },
     { key: 'm3' as const, label: 'ምዘና 3 (10)', max: 10, bg: 'bg-blue-50/40', inputFocus: 'focus:border-blue-600' },
@@ -74,37 +110,43 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
     { key: 'm5' as const, label: 'ምዘና 5 (10)', max: 10, bg: 'bg-blue-50/40', inputFocus: 'focus:border-blue-600' },
     { key: 'm6' as const, label: 'ምዘና 6 (10)', max: 10, bg: 'bg-blue-50/40', inputFocus: 'focus:border-blue-600' },
     { key: 'm7' as const, label: 'ምዘና 7 (30)', max: 30, bg: 'bg-amber-50/40', inputFocus: 'focus:border-amber-600' },
-  ];
+  ], []);
 
   // Compute calculated totals and rankings (clean 0 scores so blank students don't clutter)
-  const calculatedStudents = students.map((s) => {
-    const m1 = Number(s.m1) || 0;
-    const m2 = Number(s.m2) || 0;
-    const m3 = Number(s.m3) || 0;
-    const m4 = Number(s.m4) || 0;
-    const m5 = Number(s.m5) || 0;
-    const m6 = Number(s.m6) || 0;
-    const m7 = Number(s.m7) || 0;
+  const { rankedStudents, studentsWithScores } = useMemo(() => {
+    const calculated = students.map((s) => {
+      const m1 = Number(s.m1) || 0;
+      const m2 = Number(s.m2) || 0;
+      const m3 = Number(s.m3) || 0;
+      const m4 = Number(s.m4) || 0;
+      const m5 = Number(s.m5) || 0;
+      const m6 = Number(s.m6) || 0;
+      const m7 = Number(s.m7) || 0;
 
-    const hasAnyScore = m1 > 0 || m2 > 0 || m3 > 0 || m4 > 0 || m5 > 0 || m6 > 0 || m7 > 0;
-    const total = m1 + m2 + m3 + m4 + m5 + m6 + m7;
-    return { ...s, total, hasAnyScore };
-  });
+      const hasAnyScore = m1 > 0 || m2 > 0 || m3 > 0 || m4 > 0 || m5 > 0 || m6 > 0 || m7 > 0;
+      const total = m1 + m2 + m3 + m4 + m5 + m6 + m7;
+      return { ...s, total, hasAnyScore };
+    });
 
-  const studentsWithScores = calculatedStudents.filter((s) => s.hasAnyScore);
-  const sortedTotals = [...studentsWithScores].sort((a, b) => b.total - a.total);
+    const withScores = calculated.filter((s) => s.hasAnyScore);
+    const sortedTotals = [...withScores].sort((a, b) => b.total - a.total);
 
-  const rankedStudents = calculatedStudents.map((s) => {
-    if (!s.hasAnyScore) {
-      return { ...s, rank: undefined };
-    }
-    const rank = sortedTotals.findIndex((item) => item.total === s.total) + 1;
-    return { ...s, rank };
-  });
+    const ranked = calculated.map((s) => {
+      if (!s.hasAnyScore) {
+        return { ...s, rank: undefined };
+      }
+      const rank = sortedTotals.findIndex((item) => item.total === s.total) + 1;
+      return { ...s, rank };
+    });
 
-  const filteredStudents = rankedStudents.filter((s) =>
-    s.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+    return { rankedStudents: ranked, studentsWithScores: withScores };
+  }, [students]);
+
+  const filteredStudents = useMemo(() => {
+    if (!searchQuery.trim()) return rankedStudents;
+    const q = searchQuery.toLowerCase();
+    return rankedStudents.filter((s) => s.name.toLowerCase().includes(q));
+  }, [rankedStudents, searchQuery]);
 
   // Stats
   const totalCount = rankedStudents.length;
@@ -189,7 +231,6 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
     let num = parseFloat(val);
     if (isNaN(num) || num < 0) num = 0;
     if (num > maxVal) {
-      alert(`ከፍተኛው ነጥብ ${maxVal} መሆን አለበት!`);
       num = maxVal;
     }
     onUpdateStudent({
@@ -294,76 +335,184 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
 
   const handleExportCSV = () => {
     let csv =
-      '\uFEFFተ.ቁ,የተማሪው ስም,ዕድሜ,ፆታ,ምዘና 1 (10),ምዘና 2 (10),ምዘና 3 (10),ምዘና 4 (20),ምዘና 5 (10),ምዘና 6 (10),ምዘና 7 (30),አጠቃላይ ድምር (100),ደረጃ\n';
+      '\uFEFFተ.ቁ,የተማሪው ስም,ክፍል,ዕድሜ,ፆታ,ምዘና 1 (10),ምዘና 2 (10),ምዘና 3 (10),ምዘና 4 (20),ምዘና 5 (10),ምዘና 6 (10),ምዘና 7 (30),አጠቃላይ ድምር (100),ደረጃ\n';
     rankedStudents.forEach((s, idx) => {
-      csv += `${idx + 1},"${s.name}",${s.age},${s.gender},${s.m1},${s.m2},${s.m3},${s.m4},${s.m5},${s.m6},${s.m7},${s.total},${s.rank}\n`;
+      csv += `${idx + 1},"${s.name}","${selectedClass}",${s.age},${s.gender},${s.m1},${s.m2},${s.m3},${s.m4},${s.m5},${s.m6},${s.m7},${s.total},${s.rank || ''}\n`;
     });
     downloadCSV(csv, `${selectedClass}_የውጤት_መዝገብ_${currentYear}.csv`);
   };
 
-  const handleImportCSV = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleExportXLSX = () => {
+    const data: (string | number)[][] = [
+      [
+        'ተ.ቁ',
+        'የተማሪው ሙሉ ስም',
+        'ክፍል',
+        'ዕድሜ',
+        'ፆታ',
+        'ምዘና 1 (10)',
+        'ምዘና 2 (10)',
+        'ምዘና 3 (10)',
+        'ምዘና 4 (20)',
+        'ምዘና 5 (10)',
+        'ምዘና 6 (10)',
+        'ምዘና 7 (30)',
+        'አጠቃላይ ድምር (100)',
+        'ደረጃ'
+      ]
+    ];
+
+    rankedStudents.forEach((s, idx) => {
+      data.push([
+        idx + 1,
+        s.name,
+        selectedClass,
+        s.age,
+        s.gender,
+        s.m1,
+        s.m2,
+        s.m3,
+        s.m4,
+        s.m5,
+        s.m6,
+        s.m7,
+        s.total || 0,
+        s.rank || '-'
+      ]);
+    });
+
+    downloadXLSX(data, `${selectedClass}_የውጤት_መዝገብ_${currentYear}.xlsx`, selectedClass);
+  };
+
+  const handleDownloadTemplate = () => {
+    const templateData: (string | number)[][] = [
+      ['ተ.ቁ', 'የተማሪው ሙሉ ስም', 'ክፍል', 'ዕድሜ', 'ፆታ', 'ምዘና 1 (10)', 'ምዘና 2 (10)', 'ምዘና 3 (10)', 'ምዘና 4 (20)', 'ምዘና 5 (10)', 'ምዘና 6 (10)', 'ምዘና 7 (30)'],
+      [1, 'አበበ ከበደ', selectedClass, '7', 'ወ', '', '', '', '', '', '', ''],
+      [2, 'አልማዝ ተስፋዬ', selectedClass, '8', 'ሴ', '', '', '', '', '', '', '']
+    ];
+    downloadXLSX(templateData, `${selectedClass}_የተማሪ_መጫኛ_ናሙና_ቅጽ.xlsx`, selectedClass);
+  };
+
+  const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     try {
-      const rows = await readCSVFile(file);
-      if (rows.length <= 1) {
+      setIsImporting(true);
+      const workbookResult = await readExcelOrCSVWorkbook(file);
+      if (!workbookResult.sheets || workbookResult.sheets.length === 0) {
         alert('የተመረጠው ፋይል ባዶ ወይም ትክክለኛ የኤክሴል/CSV ፎርማት አይደለም!');
+        setIsImporting(false);
+        e.target.value = '';
         return;
       }
 
-      let count = 0;
-      const startIdx = (rows[0][0]?.includes('ተ.ቁ') || rows[0][1]?.includes('ስም') || rows[0][0]?.toLowerCase().includes('name')) ? 1 : 0;
+      // Group parsed students by destination class
+      const studentsByClass: { [className: string]: Omit<Student, 'id'>[] } = {};
+      let totalParsed = 0;
 
-      for (let i = startIdx; i < rows.length; i++) {
-        const cols = rows[i];
-        if (!cols || cols.length < 2) continue;
+      for (const sheet of workbookResult.sheets) {
+        // Check if sheet name matches a class
+        const matchedClassFromSheet = matchClassName(sheet.sheetName, classList);
+        const defaultClassForSheet = matchedClassFromSheet || selectedClass;
 
-        let nameVal = '';
-        let ageVal = '7';
-        let genderVal = 'ወ';
-        let m1 = 0, m2 = 0, m3 = 0, m4 = 0, m5 = 0, m6 = 0, m7 = 0;
+        const parsed = parseStudentRowsWithHeaders(sheet.rows, defaultClassForSheet, classList);
 
-        if (isNaN(Number(cols[0])) && cols[0].length > 1) {
-          nameVal = cols[0];
-          ageVal = cols[1] || '7';
-          genderVal = cols[2] === 'ሴ' || cols[2]?.toLowerCase() === 'f' ? 'ሴ' : 'ወ';
-          m1 = parseFloat(cols[3]) || 0;
-          m2 = parseFloat(cols[4]) || 0;
-          m3 = parseFloat(cols[5]) || 0;
-          m4 = parseFloat(cols[6]) || 0;
-          m5 = parseFloat(cols[7]) || 0;
-          m6 = parseFloat(cols[8]) || 0;
-          m7 = parseFloat(cols[9]) || 0;
-        } else {
-          nameVal = cols[1] || '';
-          ageVal = cols[2] || '7';
-          genderVal = cols[3] === 'ሴ' || cols[3]?.toLowerCase() === 'f' ? 'ሴ' : 'ወ';
-          m1 = parseFloat(cols[4]) || 0;
-          m2 = parseFloat(cols[5]) || 0;
-          m3 = parseFloat(cols[6]) || 0;
-          m4 = parseFloat(cols[7]) || 0;
-          m5 = parseFloat(cols[8]) || 0;
-          m6 = parseFloat(cols[9]) || 0;
-          m7 = parseFloat(cols[10]) || 0;
-        }
-
-        if (nameVal.trim()) {
-          onAddStudent({
-            name: nameVal.trim(),
-            age: ageVal,
-            gender: genderVal,
-            m1, m2, m3, m4, m5, m6, m7
+        for (const st of parsed.students) {
+          const destClass = st.className || defaultClassForSheet;
+          if (!studentsByClass[destClass]) {
+            studentsByClass[destClass] = [];
+          }
+          studentsByClass[destClass].push({
+            name: st.name,
+            age: st.age,
+            gender: st.gender,
+            m1: st.m1,
+            m2: st.m2,
+            m3: st.m3,
+            m4: st.m4,
+            m5: st.m5,
+            m6: st.m6,
+            m7: st.m7
           });
-          count++;
+          totalParsed++;
         }
       }
 
-      alert(`✓ ${count} ተማሪዎች ከኤክሴል/CSV ፋይል በተሳካ ሁኔታ ተጭነዋል!`);
+      if (totalParsed === 0) {
+        alert('በፋይሉ ውስጥ ምንም የተማሪ ስም አልተገኘም! እባክዎ ፋይሉን ያረጋግጡ።');
+        setIsImporting(false);
+        e.target.value = '';
+        return;
+      }
+
+      const classKeys = Object.keys(studentsByClass).filter((k) => studentsByClass[k].length > 0);
+      const isMultiClass = classKeys.length > 1;
+      const selectedClassList = studentsByClass[selectedClass] || [];
+
+      const classesSummary = classKeys.map((c) => ({
+        className: c,
+        count: studentsByClass[c].length
+      }));
+
+      setImportPreview({
+        fileName: file.name,
+        isMultiClass,
+        totalStudents: totalParsed,
+        classesSummary,
+        studentsByClass,
+        selectedClassCount: selectedClassList.length
+      });
+
+      // Default mode: if multi-class and admin/leader, 'all_classes'; if teacher, 'selected_only'
+      setImportMode(isMultiClass && currentUserRole !== 'teacher' ? 'all_classes' : 'selected_only');
+      setReplaceExisting(false);
     } catch {
-      alert('ፋይሉን ማንበብ አልተሳካም። እባክዎ ትክክለኛ የCSV/ኤክሴል ፋይል መሆኑን ያረጋግጡ።');
+      alert('ፋይሉን ማንበብ አልተሳካም። እባክዎ ትክክለኛ የExcel (.xlsx/.xls) ወይም CSV ፋይል መሆኑን ያረጋግጡ።');
+    } finally {
+      setIsImporting(false);
+      e.target.value = '';
     }
-    e.target.value = '';
+  };
+
+  const confirmImport = () => {
+    if (!importPreview) return;
+
+    if (importMode === 'all_classes' && importPreview.isMultiClass) {
+      if (onAddStudentsMultiClass) {
+        onAddStudentsMultiClass(importPreview.studentsByClass, replaceExisting);
+      } else if (onAddStudentsBatch) {
+        Object.entries(importPreview.studentsByClass).forEach(([cName, list]) => {
+          onAddStudentsBatch(list, cName, replaceExisting);
+        });
+      }
+      alert(
+        `✓ በድምሩ ${importPreview.totalStudents} ተማሪዎች ወደ ${importPreview.classesSummary.length} ክፍሎች በተሳካ ሁኔታ ተጭነዋል!`
+      );
+    } else {
+      // Selected class only
+      let targetBatch = importPreview.studentsByClass[selectedClass] || [];
+      if (targetBatch.length === 0 && importPreview.classesSummary.length === 1) {
+        targetBatch = importPreview.studentsByClass[importPreview.classesSummary[0].className] || [];
+      }
+
+      if (targetBatch.length === 0) {
+        alert(`በተመረጠው ፋይል ውስጥ ለ"${selectedClass}" የተመደበ ተማሪ አልተገኘም!`);
+        return;
+      }
+
+      if (onAddStudentsBatch) {
+        onAddStudentsBatch(targetBatch, selectedClass, replaceExisting);
+      } else {
+        targetBatch.forEach((s) => onAddStudent(s));
+      }
+
+      alert(
+        `✓ ${targetBatch.length} ተማሪዎች ወደ "${selectedClass}" ክፍል ብቻ በተሳካ ሁኔታ ተጭነዋል!`
+      );
+    }
+
+    setImportPreview(null);
   };
 
   return (
@@ -451,27 +600,44 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
               Print
             </button>
 
-            <button
-              onClick={handleExportCSV}
-              className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-3 py-2 rounded-xl transition flex items-center gap-1.5 shadow-sm cursor-pointer"
-              title="ውጤቱን ወደ Excel/CSV አውርድ"
-            >
-              <Download className="w-3.5 h-3.5" />
-              Excel አውርድ
-            </button>
+            {/* Download dropdown or buttons */}
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={handleExportXLSX}
+                className="bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-semibold px-3 py-2 rounded-xl transition flex items-center gap-1.5 shadow-sm cursor-pointer"
+                title="የዚህን ክፍል የተማሪዎች ውጤት ሙሉ በሙሉ በExcel (.xlsx) አውርድ"
+              >
+                <Download className="w-3.5 h-3.5" />
+                Excel አውርድ
+              </button>
+
+              <button
+                type="button"
+                onClick={handleDownloadTemplate}
+                className="bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 text-xs font-semibold px-2.5 py-2 rounded-xl transition flex items-center gap-1 shadow-sm cursor-pointer"
+                title="ለዚህ ክፍል የተማሪዎች መሙያ ዝግጁ የሆነ ባዶ የExcel ናሙና ቅጽ አውርድ"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-700" />
+                ናሙና ቅጽ
+              </button>
+            </div>
 
             {canEdit && (
               <>
                 <label
-                  className="bg-teal-700 hover:bg-teal-600 text-white text-xs font-semibold px-3 py-2 rounded-xl transition flex items-center gap-1.5 shadow-sm cursor-pointer"
+                  className={`bg-teal-700 hover:bg-teal-600 text-white text-xs font-semibold px-3 py-2 rounded-xl transition flex items-center gap-1.5 shadow-sm cursor-pointer ${
+                    isImporting ? 'opacity-70 pointer-events-none' : ''
+                  }`}
                   title="የተማሪዎችን ስምና ውጤት ከExcel/CSV ፋይል ወደ ስርዓቱ ጫን"
                 >
                   <Upload className="w-3.5 h-3.5" />
-                  Excel ጫን
+                  {isImporting ? 'በማንበብ ላይ...' : 'Excel ጫን'}
                   <input
                     type="file"
                     accept=".xlsx,.xls,.csv,.txt"
-                    onChange={handleImportCSV}
+                    onChange={handleImportFile}
+                    disabled={isImporting}
                     className="hidden"
                   />
                 </label>
@@ -857,6 +1023,166 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                 className="px-4 py-2 text-xs bg-blue-900 hover:bg-blue-800 text-white rounded-xl font-bold shadow"
               >
                 እሺ / ተጠናቋል
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Excel / CSV Import Confirmation & Preview Modal */}
+      {importPreview && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
+              <div className="w-10 h-10 rounded-xl bg-teal-50 border border-teal-200 flex items-center justify-center text-teal-700">
+                <FileSpreadsheet className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900">
+                  የተማሪዎች መጫኛ ማረጋገጫ (Excel/CSV)
+                </h3>
+                <p className="text-xs text-slate-500">
+                  ፋይል፦ <span className="font-semibold text-slate-700">{importPreview.fileName}</span> (በድምሩ {importPreview.totalStudents} ተማሪዎች)
+                </p>
+              </div>
+            </div>
+
+            <div className="py-4 space-y-4">
+              {/* Classes Breakdown */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-2">
+                  በፋይሉ ውስጥ የተገኙ ክፍሎች ({importPreview.classesSummary.length})፦
+                </label>
+                <div className="grid grid-cols-2 gap-2 max-h-40 overflow-y-auto p-2.5 bg-slate-50 rounded-xl border border-slate-200 text-xs">
+                  {importPreview.classesSummary.map((item) => {
+                    const isCurrent = item.className === selectedClass;
+                    return (
+                      <div
+                        key={item.className}
+                        className={`flex items-center justify-between px-2.5 py-1.5 rounded-lg border ${
+                          isCurrent
+                            ? 'bg-blue-50 border-blue-300 text-blue-900 font-bold'
+                            : 'bg-white border-slate-200 text-slate-700'
+                        }`}
+                      >
+                        <span className="truncate">{item.className}</span>
+                        <span className="text-[11px] font-semibold text-slate-500">
+                          {item.count} ተማሪ
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Import Target Choice if multi-class */}
+              {importPreview.isMultiClass ? (
+                <div className="space-y-2">
+                  <label className="block text-xs font-bold text-slate-700">
+                    የመጫኛ አማራጭ ይምረጡ፦
+                  </label>
+
+                  {currentUserRole !== 'teacher' && (
+                    <label
+                      onClick={() => setImportMode('all_classes')}
+                      className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition ${
+                        importMode === 'all_classes'
+                          ? 'bg-blue-50/70 border-blue-400 text-blue-950'
+                          : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="importMode"
+                        checked={importMode === 'all_classes'}
+                        onChange={() => setImportMode('all_classes')}
+                        className="mt-0.5"
+                      />
+                      <div>
+                        <div className="text-xs font-bold">
+                          ✓ ሁሉንም ክፍሎች በአንድ ጊዜ ወደየራሳቸው ክፍል ጫን ({importPreview.totalStudents} ተማሪዎች)
+                        </div>
+                        <div className="text-[11px] text-slate-500 mt-0.5">
+                          እያንዳንዱ ተማሪ ለተመደበበት ትክክለኛ ክፍል ብቻ ይገባል፤ አንዱ ከሌላው አይቀላቀልም።
+                        </div>
+                      </div>
+                    </label>
+                  )}
+
+                  <label
+                    onClick={() => setImportMode('selected_only')}
+                    className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition ${
+                      importMode === 'selected_only'
+                        ? 'bg-blue-50/70 border-blue-400 text-blue-950'
+                        : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="importMode"
+                      checked={importMode === 'selected_only'}
+                      onChange={() => setImportMode('selected_only')}
+                      className="mt-0.5"
+                    />
+                    <div>
+                      <div className="text-xs font-bold">
+                        ለአሁኑ ክፍል ({selectedClass}) ብቻ ጫን
+                        {importPreview.selectedClassCount > 0 ? ` (${importPreview.selectedClassCount} ተማሪዎች)` : ''}
+                      </div>
+                      <div className="text-[11px] text-slate-500 mt-0.5">
+                        ከፋይሉ ውስጥ ለ{selectedClass} ብቻ የሚመለከተው ተማሪ ተለይቶ ይገባል።
+                      </div>
+                    </div>
+                  </label>
+                </div>
+              ) : (
+                <div className="p-3 bg-blue-50/60 rounded-xl border border-blue-200 text-xs text-blue-900">
+                  ተማሪዎቹ በቀጥታ ወደ <strong>{selectedClass}</strong> ክፍል ብቻ ይገባሉ።
+                </div>
+              )}
+
+              {/* Append vs Replace Choice */}
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-1.5">
+                <div className="text-xs font-bold text-slate-700">ነባር መረጃን በተመለከተ፦</div>
+                <div className="flex flex-col sm:flex-row gap-3 pt-1">
+                  <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="replaceMode"
+                      checked={!replaceExisting}
+                      onChange={() => setReplaceExisting(false)}
+                    />
+                    <span>ካሉት ተማሪዎች ጋር ጨምር (Append)</span>
+                  </label>
+                  <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="replaceMode"
+                      checked={replaceExisting}
+                      onChange={() => setReplaceExisting(true)}
+                    />
+                    <span className="text-rose-700 font-semibold">የነበሩትን አጽድተህ ተካ (Replace)</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setImportPreview(null)}
+                className="px-4 py-2 text-xs text-slate-600 hover:bg-slate-100 rounded-xl font-medium"
+              >
+                ሰርዝ
+              </button>
+              <button
+                type="button"
+                onClick={confirmImport}
+                className="px-5 py-2 text-xs bg-teal-700 hover:bg-teal-600 text-white rounded-xl font-bold shadow flex items-center gap-1.5 cursor-pointer"
+              >
+                <Check className="w-4 h-4" />
+                አሁን ጫን
               </button>
             </div>
           </div>
