@@ -18,6 +18,46 @@ export const downloadCSV = (csvContent: string, filename: string) => {
 };
 
 /**
+ * Safely parses line input (e.g., "1. ወንደሰን አበበ (ወ)", "ወይንሸት ታደሰ [ሴ]")
+ * Extracts gender if explicitly marked inside parentheses or brackets or explicit suffix,
+ * and strips ONLY leading numbering (e.g. "1.", "01)"), WITHOUT EVER truncating or stripping
+ * valid Amharic name letters like "ወ" or "ሴ"!
+ */
+export const parseCleanStudentLine = (
+  rawLine: string,
+  defaultGender: 'ወ' | 'ሴ' = 'ወ'
+): { name: string; gender: 'ወ' | 'ሴ' } => {
+  if (!rawLine || !rawLine.trim()) {
+    return { name: '', gender: defaultGender };
+  }
+
+  let text = rawLine.trim();
+
+  // 1. Strip leading row numbers e.g. "1.", "01)", "1 -", "[1]", "1 "
+  text = text.replace(/^\[?\d+\]?[\.\)\-\s]+/, '').trim();
+
+  let gender: 'ወ' | 'ሴ' = defaultGender;
+
+  // 2. Check for explicit parenthetical or bracketed gender marker e.g. (ወ), (ሴ), [ወ], [ሴ], (M), (F), (ወንድ), (ሴት)
+  if (/[\(\[\{]\s*(?:ሴ|ሴት|f|female)\s*[\)\]\}]/i.test(text)) {
+    gender = 'ሴ';
+    text = text.replace(/\s*[\(\[\{]\s*(?:ሴ|ሴት|f|female)\s*[\)\]\}]/gi, '');
+  } else if (/[\(\[\{]\s*(?:ወ|ወንድ|m|male)\s*[\)\]\}]/i.test(text)) {
+    gender = 'ወ';
+    text = text.replace(/\s*[\(\[\{]\s*(?:ወ|ወንድ|m|male)\s*[\)\]\}]/gi, '');
+  } else if (/[\s,]+(?:ወንድ|male)$/i.test(text)) {
+    gender = 'ወ';
+    text = text.replace(/[\s,]+(?:ወንድ|male)$/gi, '');
+  } else if (/[\s,]+(?:ሴት|female)$/i.test(text)) {
+    gender = 'ሴ';
+    text = text.replace(/[\s,]+(?:ሴት|female)$/gi, '');
+  }
+
+  const name = text.trim();
+  return { name, gender };
+};
+
+/**
  * Download single sheet XLSX file
  */
 export const downloadXLSX = (data: (string | number)[][], filename: string, sheetName = 'ውጤት መዝገብ') => {
@@ -93,7 +133,11 @@ export const normalizeClassString = (str: string): string => {
 /**
  * Intelligent class matcher: finds best matching class from classList
  */
-export const matchClassName = (raw: string, classList: string[]): string | null => {
+export const matchClassName = (
+  raw: string,
+  classList: string[],
+  defaultClassName?: string
+): string | null => {
   if (!raw || typeof raw !== 'string') return null;
   const rawTrimmed = raw.trim();
   if (!rawTrimmed) return null;
@@ -113,7 +157,6 @@ export const matchClassName = (raw: string, classList: string[]): string | null 
   if (normMatch) return normMatch;
 
   // 4. Special Amharic shorthands
-  // "ማቆያ" or "መዋዕለ" or "ህፃናት" or "kindergarten" or "kg" -> "ማቆያ ክፍል"
   if (
     normalizedRaw.includes('ማቆያ') ||
     normalizedRaw.includes('መዋዕለ') ||
@@ -126,7 +169,7 @@ export const matchClassName = (raw: string, classList: string[]): string | null 
     if (makoya) return makoya;
   }
 
-  // "ደረጃ 1" or "ደረጃ 2" or "level 1"
+  // "ደረጃ 1" or "ደረጃ 2"
   if (normalizedRaw.includes('ደረጃ1') || normalizedRaw.includes('level1') || normalizedRaw === 'ደ1') {
     const d1 = classList.find((c) => c.includes('ደረጃ 1') || c.includes('ደረጃ1'));
     if (d1) return d1;
@@ -136,30 +179,74 @@ export const matchClassName = (raw: string, classList: string[]): string | null 
     if (d2) return d2;
   }
 
-  // Match e.g. "1ኛ ሀ", "1ኛሀ", "1ሀ", "grade1a", "g1a", "1a" -> "1ኛ ክፍል ሀ"
-  for (const c of classList) {
-    const normC = normalizeClassString(c);
-    // Strip "ክፍል" from class: e.g. "1ኛክፍልሀ" -> "1ኛሀ"
-    const strippedC = normC.replace('ክፍል', '');
-    if (normalizedRaw === strippedC || normalizedRaw.includes(strippedC) || strippedC.includes(normalizedRaw)) {
-      return c;
+  // 5. Intelligent Grade Number and Section extraction
+  // Extract number (1 to 12)
+  const numMatch = rawTrimmed.match(/(?:ክፍል|ደረጃ|grade|g)?\s*(\d+)/i);
+  if (numMatch) {
+    const num = parseInt(numMatch[1], 10);
+    if (num >= 1 && num <= 12) {
+      // Check section letter: "ሀ", "A" or "ለ", "B"
+      let section: 'ሀ' | 'ለ' | null = null;
+      if (
+        rawTrimmed.includes('ሀ') ||
+        /\b[aA]\b/.test(rawTrimmed) ||
+        /grade\s*\d+\s*[aA]/i.test(rawTrimmed) ||
+        /\d+\s*[aA]/.test(rawTrimmed) ||
+        normalizedRaw.endsWith('ሀ') ||
+        normalizedRaw.endsWith('a')
+      ) {
+        section = 'ሀ';
+      } else if (
+        rawTrimmed.includes('ለ') ||
+        /\b[bB]\b/.test(rawTrimmed) ||
+        /grade\s*\d+\s*[bB]/i.test(rawTrimmed) ||
+        /\d+\s*[bB]/.test(rawTrimmed) ||
+        normalizedRaw.endsWith('ለ') ||
+        normalizedRaw.endsWith('b')
+      ) {
+        section = 'ለ';
+      }
+
+      // Grades 11 and 12 typically have no section
+      if (num === 11) {
+        const c11 = classList.find((c) => c.includes('11'));
+        if (c11) return c11;
+      }
+      if (num === 12) {
+        const c12 = classList.find((c) => c.includes('12'));
+        if (c12) return c12;
+      }
+
+      // For grades 1 to 10
+      if (section) {
+        const targetClass = `${num}ኛ ክፍል ${section}`;
+        const found = classList.find((c) => c === targetClass || normalizeClassString(c) === normalizeClassString(targetClass));
+        if (found) return found;
+      }
+
+      // If no section was given (e.g. just "8ኛ ክፍል" or "8ኛ" or "Grade 8"):
+      // Check if defaultClassName belongs to this grade
+      if (defaultClassName) {
+        const normDef = normalizeClassString(defaultClassName);
+        if (normDef.startsWith(`${num}ኛ`)) {
+          return defaultClassName;
+        }
+      }
+
+      // Otherwise default to section 'ሀ'
+      const targetDefault = `${num}ኛ ክፍል ሀ`;
+      const foundDefault = classList.find((c) => c === targetDefault || c.includes(`${num}ኛ ክፍል`));
+      if (foundDefault) return foundDefault;
     }
   }
 
-  // English "grade 1 a" -> "1ኛ ክፍል ሀ"
-  const gradeEngMatch = rawTrimmed.match(/(?:grade|g)?\s*(\d+)\s*([a-bA-Bሀለ])?/i);
-  if (gradeEngMatch) {
-    const num = gradeEngMatch[1];
-    let letter = (gradeEngMatch[2] || '').toUpperCase();
-    if (letter === 'A' || letter === 'ሀ') letter = 'ሀ';
-    else if (letter === 'B' || letter === 'ለ') letter = 'ለ';
-
-    const candidate = classList.find((c) => {
-      const hasNum = c.includes(num);
-      const hasLetter = letter ? c.includes(letter) : true;
-      return hasNum && hasLetter;
-    });
-    if (candidate) return candidate;
+  // 6. Substring match fallback
+  for (const c of classList) {
+    const normC = normalizeClassString(c);
+    const strippedC = normC.replace('ክፍል', '');
+    if (normalizedRaw === strippedC || (normalizedRaw.length >= 3 && strippedC.includes(normalizedRaw))) {
+      return c;
+    }
   }
 
   return null;
@@ -323,46 +410,70 @@ export const parseStudentRowsWithHeaders = (
   let colIdxM6 = -1;
   let colIdxM7 = -1;
 
-  for (let r = 0; r < Math.min(rows.length, 4); r++) {
+  // Scan up to 12 rows to find the true table header row
+  let bestHeaderScore = 0;
+  for (let r = 0; r < Math.min(rows.length, 12); r++) {
     const row = rows[r];
-    const rowStr = row.join(' ').toLowerCase();
+    let score = 0;
+    let tempColName = -1;
+    let tempColClass = -1;
+    let tempColAge = -1;
+    let tempColGender = -1;
 
-    if (
-      rowStr.includes('ስም') ||
-      rowStr.includes('name') ||
-      rowStr.includes('ተማሪ') ||
-      rowStr.includes('ክፍል') ||
-      rowStr.includes('ተ.ቁ')
-    ) {
+    row.forEach((cell, idx) => {
+      const c = cell.toLowerCase().trim();
+      if (c.includes('ስም') || c.includes('name') || c === 'ተማሪ' || c === 'የተማሪ ስም' || c === 'ሙሉ ስም') {
+        score += 10;
+        if (tempColName === -1) tempColName = idx;
+      }
+      if (c.includes('ክፍል') || c.includes('class') || c.includes('grade') || c.includes('ደረጃ')) {
+        score += 3;
+        if (tempColClass === -1) tempColClass = idx;
+      }
+      if (c.includes('ዕድሜ') || c.includes('እድሜ') || c === 'age') {
+        score += 3;
+        if (tempColAge === -1) tempColAge = idx;
+      }
+      if (c.includes('ፆታ') || c.includes('ጾታ') || c === 'gender' || c === 'sex') {
+        score += 3;
+        if (tempColGender === -1) tempColGender = idx;
+      }
+      if (c.includes('ምዘና') || c.includes('quiz') || c.includes('test') || c.includes('ድምር')) {
+        score += 2;
+      }
+      if (c.includes('ተ.ቁ') || c === 'no' || c === '#' || c === 'no.') {
+        score += 2;
+      }
+    });
+
+    // A true table header must contain a name column or have high column match
+    if (tempColName !== -1 && score > bestHeaderScore) {
+      bestHeaderScore = score;
       headerRowIndex = r;
+      colIdxName = tempColName;
+      colIdxClass = tempColClass;
+      colIdxAge = tempColAge;
+      colIdxGender = tempColGender;
+
+      // Map assessment columns
       row.forEach((cell, idx) => {
         const cLower = cell.toLowerCase().trim();
-
-        if (colIdxName === -1 && (cLower.includes('ስም') || cLower.includes('name') || cLower === 'ተማሪ')) {
-          colIdxName = idx;
-        } else if (colIdxClass === -1 && (cLower.includes('ክፍል') || cLower.includes('class') || cLower.includes('grade') || cLower.includes('ደረጃ'))) {
-          colIdxClass = idx;
-        } else if (colIdxAge === -1 && (cLower.includes('ዕድሜ') || cLower.includes('እድሜ') || cLower === 'age')) {
-          colIdxAge = idx;
-        } else if (colIdxGender === -1 && (cLower.includes('ፆታ') || cLower.includes('ጾታ') || cLower === 'gender' || cLower === 'sex')) {
-          colIdxGender = idx;
-        } else if (colIdxM1 === -1 && (cLower.includes('ምዘና 1') || cLower === 'ምዘና1' || cLower === 'm1' || cLower.includes('quiz 1') || cLower.includes('test 1'))) {
+        if (cLower.includes('ምዘና 1') || cLower === 'ምዘና1' || cLower === 'm1' || cLower.includes('quiz 1') || cLower.includes('test 1')) {
           colIdxM1 = idx;
-        } else if (colIdxM2 === -1 && (cLower.includes('ምዘና 2') || cLower === 'ምዘና2' || cLower === 'm2' || cLower.includes('quiz 2') || cLower.includes('test 2'))) {
+        } else if (cLower.includes('ምዘና 2') || cLower === 'ምዘና2' || cLower === 'm2' || cLower.includes('quiz 2') || cLower.includes('test 2')) {
           colIdxM2 = idx;
-        } else if (colIdxM3 === -1 && (cLower.includes('ምዘና 3') || cLower === 'ምዘና3' || cLower === 'm3' || cLower.includes('quiz 3') || cLower.includes('test 3'))) {
+        } else if (cLower.includes('ምዘና 3') || cLower === 'ምዘና3' || cLower === 'm3' || cLower.includes('quiz 3') || cLower.includes('test 3')) {
           colIdxM3 = idx;
-        } else if (colIdxM4 === -1 && (cLower.includes('ምዘና 4') || cLower === 'ምዘና4' || cLower === 'm4' || cLower.includes('mid') || cLower.includes('test 4'))) {
+        } else if (cLower.includes('ምዘና 4') || cLower === 'ምዘና4' || cLower === 'm4' || cLower.includes('mid') || cLower.includes('test 4')) {
           colIdxM4 = idx;
-        } else if (colIdxM5 === -1 && (cLower.includes('ምዘና 5') || cLower === 'ምዘና5' || cLower === 'm5' || cLower.includes('quiz 4') || cLower.includes('test 5'))) {
+        } else if (cLower.includes('ምዘና 5') || cLower === 'ምዘና5' || cLower === 'm5' || cLower.includes('quiz 4') || cLower.includes('test 5')) {
           colIdxM5 = idx;
-        } else if (colIdxM6 === -1 && (cLower.includes('ምዘና 6') || cLower === 'ምዘና6' || cLower === 'm6' || cLower.includes('quiz 5') || cLower.includes('test 6'))) {
+        } else if (cLower.includes('ምዘና 6') || cLower === 'ምዘና6' || cLower === 'm6' || cLower.includes('quiz 5') || cLower.includes('test 6')) {
           colIdxM6 = idx;
-        } else if (colIdxM7 === -1 && (cLower.includes('ምዘና 7') || cLower === 'ምዘና7' || cLower === 'm7' || cLower.includes('final') || cLower.includes('ማጠቃለያ'))) {
+        } else if (cLower.includes('ምዘና 7') || cLower === 'ምዘና7' || cLower === 'm7' || cLower.includes('final') || cLower.includes('ማጠቃለያ')) {
           colIdxM7 = idx;
         }
       });
-      break;
     }
   }
 
@@ -401,9 +512,6 @@ export const parseStudentRowsWithHeaders = (
       if (colIdxM7 !== -1) m7 = parseFloat(row[colIdxM7]) || 0;
     } else {
       // No recognized header row: inspect first columns heuristic
-      // Format 1: [Name, Age, Gender, m1, ...]
-      // Format 2: [No, Name, Age, Gender, m1, ...]
-      // Format 3: [No, Name, Class, Age, Gender, m1, ...]
       let nameIdx = 0;
       if (!isNaN(Number(row[0])) && row.length > 1) {
         nameIdx = 1;
@@ -413,7 +521,7 @@ export const parseStudentRowsWithHeaders = (
 
       // Check if subsequent column is a Class name
       const potentialClassCol1 = row[nameIdx + 1] || '';
-      const matchedAsClass1 = matchClassName(potentialClassCol1, classList);
+      const matchedAsClass1 = matchClassName(potentialClassCol1, classList, defaultClassName);
 
       if (matchedAsClass1) {
         rowClass = matchedAsClass1;
@@ -448,7 +556,7 @@ export const parseStudentRowsWithHeaders = (
     // Match class if found
     let finalClass = defaultClassName;
     if (rowClass) {
-      const matched = matchClassName(rowClass, classList);
+      const matched = matchClassName(rowClass, classList, defaultClassName);
       if (matched) {
         finalClass = matched;
         foundClassesSet.add(matched);

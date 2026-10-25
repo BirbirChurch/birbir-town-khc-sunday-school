@@ -15,9 +15,20 @@ import {
   BookMarked,
   KeyRound
 } from 'lucide-react';
-import { Role, Teacher, Student, AbsenteeRecord, ChoirMember, SpiritualMember, AnnualPlanItem, AppData } from './types';
+import {
+  Role,
+  Teacher,
+  Student,
+  AbsenteeRecord,
+  ChoirMember,
+  SpiritualMember,
+  AnnualPlanItem,
+  AppData,
+  WeeklyAttendanceStatus
+} from './types';
 import { CLASS_LIST, DEFAULT_ANNUAL_PLAN } from './constants/initialData';
 import { subscribeToAppData, syncAppDataToFirebase, saveToLocalStorage, countStudentsInData, exportBackupJSON } from './services/firebase';
+import { generateUniqueId, sanitizeAndDeduplicateAppData } from './utils/idGenerator';
 import { Header } from './components/Header';
 import { LoginPortal } from './components/LoginPortal';
 import { ClassesTab } from './components/ClassesTab';
@@ -45,9 +56,10 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = subscribeToAppData(
       (data) => {
-        setAppData(data);
-        if (data.years && data.years.length > 0 && !data.years.includes(currentYear)) {
-          setCurrentYear(data.years[0]);
+        const sanitized = sanitizeAndDeduplicateAppData(data);
+        setAppData(sanitized);
+        if (sanitized.years && sanitized.years.length > 0 && !sanitized.years.includes(currentYear)) {
+          setCurrentYear(sanitized.years[0]);
         }
       },
       (status) => {
@@ -183,7 +195,7 @@ export default function App() {
   const handleAddStudent = (newStudent: Omit<Student, 'id'>) => {
     const studentWithId: Student = {
       ...newStudent,
-      id: Date.now()
+      id: generateUniqueId()
     };
 
     updateAppData(
@@ -206,6 +218,32 @@ export default function App() {
     );
   };
 
+  const handleAddStudentToClass = (targetClass: string, newStudent: Omit<Student, 'id'>) => {
+    const studentWithId: Student = {
+      ...newStudent,
+      id: generateUniqueId()
+    };
+
+    updateAppData(
+      (prev) => {
+        const yearStudents = prev.students?.[currentYear] || {};
+        const classStudents = yearStudents[targetClass] || [];
+
+        return {
+          ...prev,
+          students: {
+            ...prev.students,
+            [currentYear]: {
+              ...yearStudents,
+              [targetClass]: [...classStudents, studentWithId]
+            }
+          }
+        };
+      },
+      { immediate: true }
+    );
+  };
+
   const handleAddStudentsBatch = (
     newStudents: Omit<Student, 'id'>[],
     targetClass?: string,
@@ -213,10 +251,9 @@ export default function App() {
   ) => {
     if (!newStudents.length) return;
     const destClass = targetClass || selectedClass;
-    let baseId = Date.now();
     const studentsWithIds: Student[] = newStudents.map((s) => ({
       ...s,
-      id: baseId++
+      id: generateUniqueId()
     }));
 
     updateAppData(
@@ -244,7 +281,6 @@ export default function App() {
     replaceExisting?: boolean
   ) => {
     if (!Object.keys(studentsByClass).length) return;
-    let baseId = Date.now();
 
     updateAppData(
       (prev) => {
@@ -255,7 +291,7 @@ export default function App() {
           const existing = replaceExisting ? [] : (yearStudents[cName] || []);
           const withIds: Student[] = list.map((s) => ({
             ...s,
-            id: baseId++
+            id: generateUniqueId()
           }));
           yearStudents[cName] = [...existing, ...withIds];
         });
@@ -346,11 +382,23 @@ export default function App() {
   const handleAddAttendance = (record: Omit<AbsenteeRecord, 'id'>) => {
     const recWithId: AbsenteeRecord = {
       ...record,
-      id: Date.now()
+      id: generateUniqueId()
     };
     updateAppData((prev) => ({
       ...prev,
       attendance: [...(prev.attendance || []), recWithId]
+    }));
+  };
+
+  const handleAddAttendanceBatch = (records: Omit<AbsenteeRecord, 'id'>[]) => {
+    if (!records.length) return;
+    const withIds: AbsenteeRecord[] = records.map((r) => ({
+      ...r,
+      id: generateUniqueId()
+    }));
+    updateAppData((prev) => ({
+      ...prev,
+      attendance: [...(prev.attendance || []), ...withIds]
     }));
   };
 
@@ -361,15 +409,143 @@ export default function App() {
     }));
   };
 
+  // 40-Week Structured Attendance Handlers
+  const handleUpdateStudentWeeklyAttendance = (
+    year: string,
+    className: string,
+    studentId: number | string,
+    week: number,
+    status: WeeklyAttendanceStatus
+  ) => {
+    updateAppData((prev) => {
+      const yearAtt = prev.weeklyAttendance?.[year] || {};
+      const classAtt = yearAtt[className] || {};
+      const studentAtt = classAtt[studentId] || {};
+
+      const updatedStudentAtt = {
+        ...studentAtt,
+        [week]: status
+      };
+
+      return {
+        ...prev,
+        weeklyAttendance: {
+          ...prev.weeklyAttendance,
+          [year]: {
+            ...yearAtt,
+            [className]: {
+              ...classAtt,
+              [studentId]: updatedStudentAtt
+            }
+          }
+        }
+      };
+    });
+  };
+
+  const handleBatchUpdateWeeklyAttendance = (
+    year: string,
+    className: string,
+    week: number,
+    statusUpdates: { [studentId: string]: WeeklyAttendanceStatus },
+    weekDate?: string
+  ) => {
+    updateAppData((prev) => {
+      const yearAtt = prev.weeklyAttendance?.[year] || {};
+      const classAtt = { ...(yearAtt[className] || {}) };
+
+      Object.entries(statusUpdates).forEach(([sId, stat]) => {
+        const studentAtt = classAtt[sId] || {};
+        classAtt[sId] = {
+          ...studentAtt,
+          [week]: stat
+        };
+      });
+
+      const updatedDates = weekDate
+        ? {
+            ...prev.weekDates,
+            [year]: {
+              ...(prev.weekDates?.[year] || {}),
+              [week]: weekDate
+            }
+          }
+        : prev.weekDates;
+
+      return {
+        ...prev,
+        weekDates: updatedDates,
+        weeklyAttendance: {
+          ...prev.weeklyAttendance,
+          [year]: {
+            ...yearAtt,
+            [className]: classAtt
+          }
+        }
+      };
+    });
+  };
+
+  const handleSetWeekDate = (year: string, week: number, dateStr: string) => {
+    updateAppData((prev) => ({
+      ...prev,
+      weekDates: {
+        ...prev.weekDates,
+        [year]: {
+          ...(prev.weekDates?.[year] || {}),
+          [week]: dateStr
+        }
+      }
+    }));
+  };
+
+  const handleClearWeekAttendance = (year: string, className: string, week: number) => {
+    updateAppData((prev) => {
+      const yearAtt = prev.weeklyAttendance?.[year] || {};
+      const classAtt = { ...(yearAtt[className] || {}) };
+
+      Object.keys(classAtt).forEach((sId) => {
+        if (classAtt[sId] && classAtt[sId][week]) {
+          const updatedStudent = { ...classAtt[sId] };
+          delete updatedStudent[week];
+          classAtt[sId] = updatedStudent;
+        }
+      });
+
+      return {
+        ...prev,
+        weeklyAttendance: {
+          ...prev.weeklyAttendance,
+          [year]: {
+            ...yearAtt,
+            [className]: classAtt
+          }
+        }
+      };
+    });
+  };
+
   // Choir handlers
   const handleAddChoirMember = (member: Omit<ChoirMember, 'id'>) => {
     const mWithId: ChoirMember = {
       ...member,
-      id: Date.now()
+      id: generateUniqueId()
     };
     updateAppData((prev) => ({
       ...prev,
       choirMembers: [...(prev.choirMembers || []), mWithId]
+    }));
+  };
+
+  const handleAddChoirMembersBatch = (members: Omit<ChoirMember, 'id'>[]) => {
+    if (!members.length) return;
+    const withIds: ChoirMember[] = members.map((m) => ({
+      ...m,
+      id: generateUniqueId()
+    }));
+    updateAppData((prev) => ({
+      ...prev,
+      choirMembers: [...(prev.choirMembers || []), ...withIds]
     }));
   };
 
@@ -391,11 +567,23 @@ export default function App() {
   const handleAddSpiritualMember = (member: Omit<SpiritualMember, 'id'>) => {
     const mWithId: SpiritualMember = {
       ...member,
-      id: Date.now()
+      id: generateUniqueId()
     };
     updateAppData((prev) => ({
       ...prev,
       spiritualMembers: [...(prev.spiritualMembers || []), mWithId]
+    }));
+  };
+
+  const handleAddSpiritualMembersBatch = (members: Omit<SpiritualMember, 'id'>[]) => {
+    if (!members.length) return;
+    const withIds: SpiritualMember[] = members.map((m) => ({
+      ...m,
+      id: generateUniqueId()
+    }));
+    updateAppData((prev) => ({
+      ...prev,
+      spiritualMembers: [...(prev.spiritualMembers || []), ...withIds]
     }));
   };
 
@@ -424,7 +612,7 @@ export default function App() {
   const handleAddPlan = (newPlan: Omit<AnnualPlanItem, 'id'>) => {
     const planWithId: AnnualPlanItem = {
       ...newPlan,
-      id: Date.now()
+      id: generateUniqueId()
     };
     updateAppData((prev) => ({
       ...prev,
@@ -457,7 +645,7 @@ export default function App() {
   const handleAddTeacher = (newTeacher: Omit<Teacher, 'id'>) => {
     const tWithId: Teacher = {
       ...newTeacher,
-      id: Date.now()
+      id: generateUniqueId()
     };
     updateAppData((prev) => ({
       ...prev,
@@ -654,10 +842,20 @@ export default function App() {
                 <AttendanceTab
                   currentYear={currentYear}
                   classList={CLASS_LIST}
+                  studentsByClass={appData.students?.[currentYear] || {}}
+                  weeklyAttendance={appData.weeklyAttendance?.[currentYear] || {}}
+                  weekDates={appData.weekDates?.[currentYear] || {}}
                   attendance={appData.attendance || []}
+                  onUpdateStudentWeeklyAttendance={handleUpdateStudentWeeklyAttendance}
+                  onBatchUpdateWeeklyAttendance={handleBatchUpdateWeeklyAttendance}
+                  onSetWeekDate={handleSetWeekDate}
+                  onClearWeekAttendance={handleClearWeekAttendance}
                   onAddAttendance={handleAddAttendance}
+                  onAddAttendanceBatch={handleAddAttendanceBatch}
                   onDeleteAttendance={handleDeleteAttendance}
+                  onAddStudentToClass={handleAddStudentToClass}
                   currentUserRole={currentUserRole}
+                  loggedInTeacher={loggedInTeacher}
                 />
               )}
 
@@ -666,6 +864,7 @@ export default function App() {
                   groups={appData.choirGroups || []}
                   members={appData.choirMembers || []}
                   onAddMember={handleAddChoirMember}
+                  onAddMembersBatch={handleAddChoirMembersBatch}
                   onDeleteMember={handleDeleteChoirMember}
                   onAddGroup={handleAddChoirGroup}
                   currentUserRole={currentUserRole}
@@ -677,6 +876,7 @@ export default function App() {
                   groups={appData.spiritualGroups || []}
                   members={appData.spiritualMembers || []}
                   onAddMember={handleAddSpiritualMember}
+                  onAddMembersBatch={handleAddSpiritualMembersBatch}
                   onDeleteMember={handleDeleteSpiritualMember}
                   onAddGroup={handleAddSpiritualGroup}
                   currentUserRole={currentUserRole}

@@ -287,7 +287,7 @@ export const PlanReportTab: React.FC<PlanReportTabProps> = ({
 
                   return (
                     <tr
-                      key={p.id}
+                      key={`plan_${p.id || 'p'}_${idx}`}
                       className={`hover:bg-slate-50 transition ${
                         isCompleted ? 'bg-emerald-50/20' : ''
                       }`}

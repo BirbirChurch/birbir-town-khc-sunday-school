@@ -318,7 +318,7 @@ export const TeachersTab: React.FC<TeachersTabProps> = ({
                 </tr>
               ) : (
                 filteredTeachers.map((t, idx) => (
-                  <tr key={t.id} className="hover:bg-slate-50 transition">
+                  <tr key={`teach_${t.id || 't'}_${idx}`} className="hover:bg-slate-50 transition">
                     <td className="py-2.5 px-2 border-r border-slate-200 text-slate-500 font-medium">
                       {idx + 1}
                     </td>

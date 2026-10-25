@@ -89,12 +89,17 @@ export const TopAchieversTab: React.FC<TopAchieversTabProps> = ({
             </div>
             <div>
               <h3 className="text-base font-bold text-slate-800">
-                ከየክፍሉ ከደረጃ 1 እስከ 3 የወጡ ተማሪዎች ዝርዝር
+                ከየክፍሉ ከደረጃ 1 እስከ 3 የወጡ ተሸላሚ ተማሪዎች ዝርዝር (Top 3)
               </h3>
               <p className="text-xs text-slate-500">
                 የ{currentYear} ዓ/ም የትምህርት ዘመን የላቀ ውጤት ያመጡ ተማሪዎች
               </p>
             </div>
+          </div>
+
+          {/* Info Banner clarifying Top 3 scope */}
+          <div className="w-full md:w-auto bg-amber-50/90 border border-amber-200 text-amber-900 rounded-xl px-3 py-1.5 text-xs">
+            💡 <strong>ማስታወሻ፦</strong> ይህ ገጽ ለሽልማት <strong>ከ1ኛ እስከ 3ኛ የወጡትን 3 ተማሪዎች</strong> ብቻ ያሳያል። የክፍሉን ሙሉ ተማሪዎች ለማየት ወይም አዲስ ተማሪዎችን ለማስገባት <strong>"ክፍሎች"</strong> ወይም <strong>"አተንዳንስ"</strong> የሚለውን ትር ይጠቀሙ።
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -159,7 +164,7 @@ export const TopAchieversTab: React.FC<TopAchieversTabProps> = ({
                 </tr>
               ) : (
                 filtered.map((item, idx) => (
-                  <tr key={idx} className="hover:bg-slate-50 transition">
+                  <tr key={`top_${item.className}_${item.rank}_${idx}`} className="hover:bg-slate-50 transition">
                     <td className="py-2.5 px-3 border-r border-slate-200 text-slate-500 font-medium">
                       {idx + 1}
                     </td>

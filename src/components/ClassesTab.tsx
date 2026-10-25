@@ -25,7 +25,8 @@ import {
   downloadXLSX,
   readExcelOrCSVWorkbook,
   parseStudentRowsWithHeaders,
-  matchClassName
+  matchClassName,
+  parseCleanStudentLine
 } from '../utils/csv';
 
 interface ClassesTabProps {
@@ -83,6 +84,11 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
   const [newStudentAge, setNewStudentAge] = useState('7');
   const [newStudentGender, setNewStudentGender] = useState('ወ');
 
+  // Batch paste modal state (to enter multiple students at once)
+  const [showBatchAddModal, setShowBatchAddModal] = useState(false);
+  const [batchNamesText, setBatchNamesText] = useState('');
+  const [batchDefaultGender, setBatchDefaultGender] = useState<'ወ' | 'ሴ'>('ወ');
+
   // Excel/CSV import modal and preview states
   const [importPreview, setImportPreview] = useState<{
     fileName: string;
@@ -92,7 +98,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
     studentsByClass: { [className: string]: Omit<Student, 'id'>[] };
     selectedClassCount: number;
   } | null>(null);
-  const [importMode, setImportMode] = useState<'all_classes' | 'selected_only'>('all_classes');
+  const [importMode, setImportMode] = useState<'all_classes' | 'selected_only' | 'all_into_selected'>('all_into_selected');
   const [replaceExisting, setReplaceExisting] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
 
@@ -159,6 +165,19 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
       : '-';
   const highestScore =
     gradedCount > 0 ? Math.max(...studentsWithScores.map((s) => s.total || 0)) : 0;
+
+  // Sister section (e.g. 8ኛ ክፍል ሀ <-> 8ኛ ክፍል ለ) for quick switching
+  const siblingSection = useMemo(() => {
+    if (selectedClass.endsWith(' ሀ')) {
+      const bName = selectedClass.replace(' ሀ', ' ለ');
+      return classList.includes(bName) ? bName : null;
+    }
+    if (selectedClass.endsWith(' ለ')) {
+      const aName = selectedClass.replace(' ለ', ' ሀ');
+      return classList.includes(aName) ? aName : null;
+    }
+    return null;
+  }, [selectedClass, classList]);
 
   // Horizontal and vertical keyboard navigation (↑ ↓ ← → and Enter)
   const handleKeyDown = (
@@ -333,6 +352,47 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
     setShowAddModal(false);
   };
 
+  const handleBatchAddStudents = () => {
+    if (!batchNamesText.trim()) return;
+
+    const lines = batchNamesText.split(/\r?\n/);
+    const newStudents: Omit<Student, 'id'>[] = [];
+
+    lines.forEach((line) => {
+      const { name, gender } = parseCleanStudentLine(line, batchDefaultGender);
+
+      if (name && name.length >= 2) {
+        newStudents.push({
+          name,
+          age: '7',
+          gender,
+          m1: 0,
+          m2: 0,
+          m3: 0,
+          m4: 0,
+          m5: 0,
+          m6: 0,
+          m7: 0
+        });
+      }
+    });
+
+    if (newStudents.length === 0) {
+      alert('እባክዎን ትክክለኛ የተማሪ ስም ያስገቡ!');
+      return;
+    }
+
+    if (onAddStudentsBatch) {
+      onAddStudentsBatch(newStudents, selectedClass, false);
+    } else {
+      newStudents.forEach((st) => onAddStudent(st));
+    }
+
+    alert(`✓ ${newStudents.length} ተማሪዎች ወደ "${selectedClass}" በተሳካ ሁኔታ ተመዝግበዋል!`);
+    setBatchNamesText('');
+    setShowBatchAddModal(false);
+  };
+
   const handleExportCSV = () => {
     let csv =
       '\uFEFFተ.ቁ,የተማሪው ስም,ክፍል,ዕድሜ,ፆታ,ምዘና 1 (10),ምዘና 2 (10),ምዘና 3 (10),ምዘና 4 (20),ምዘና 5 (10),ምዘና 6 (10),ምዘና 7 (30),አጠቃላይ ድምር (100),ደረጃ\n';
@@ -464,8 +524,8 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
         selectedClassCount: selectedClassList.length
       });
 
-      // Default mode: if multi-class and admin/leader, 'all_classes'; if teacher, 'selected_only'
-      setImportMode(isMultiClass && currentUserRole !== 'teacher' ? 'all_classes' : 'selected_only');
+      // Default mode: always load all students into the currently selected class so that naming variations (e.g. 8 vs 8ኛ ክፍል vs 8ኛ ክፍል ሀ) never drop students
+      setImportMode('all_into_selected');
       setReplaceExisting(false);
     } catch {
       alert('ፋይሉን ማንበብ አልተሳካም። እባክዎ ትክክለኛ የExcel (.xlsx/.xls) ወይም CSV ፋይል መሆኑን ያረጋግጡ።');
@@ -478,7 +538,27 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
   const confirmImport = () => {
     if (!importPreview) return;
 
-    if (importMode === 'all_classes' && importPreview.isMultiClass) {
+    if (importMode === 'all_into_selected') {
+      const allStudents: Omit<Student, 'id'>[] = [];
+      Object.values(importPreview.studentsByClass).forEach((list) => {
+        allStudents.push(...list);
+      });
+
+      if (allStudents.length === 0) {
+        alert('በፋይሉ ውስጥ ምንም ተማሪ አልተገኘም!');
+        return;
+      }
+
+      if (onAddStudentsBatch) {
+        onAddStudentsBatch(allStudents, selectedClass, replaceExisting);
+      } else {
+        allStudents.forEach((s) => onAddStudent(s));
+      }
+
+      alert(
+        `✓ በድምሩ ${allStudents.length} ተማሪዎች ወደ "${selectedClass}" ክፍል በተሳካ ሁኔታ ተጭነዋል!`
+      );
+    } else if (importMode === 'all_classes' && importPreview.isMultiClass) {
       if (onAddStudentsMultiClass) {
         onAddStudentsMultiClass(importPreview.studentsByClass, replaceExisting);
       } else if (onAddStudentsBatch) {
@@ -497,7 +577,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
       }
 
       if (targetBatch.length === 0) {
-        alert(`በተመረጠው ፋይል ውስጥ ለ"${selectedClass}" የተመደበ ተማሪ አልተገኘም!`);
+        alert(`በተመረጠው ፋይል ውስጥ ለ"${selectedClass}" የተመደበ ተማሪ አልተገኘም! እባክዎ "ሁሉንም ወደዚህ ክፍል ጫን" የሚለውን ይምረጡ።`);
         return;
       }
 
@@ -566,115 +646,145 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                 <span>ትምህርቶች፦ {(classSubjects[selectedClass] || []).length > 0 ? (classSubjects[selectedClass] || []).join('፣ ') : 'አጠቃላይ'}</span>
                 {canEdit && <span className="bg-blue-200 text-blue-800 px-1.5 py-0.5 rounded text-[10px] font-bold">+ ምረጥ</span>}
               </button>
+
+              {/* Sister Section Switcher (e.g. 8ኛ ክፍል ሀ <-> 8ኛ ክፍል ለ) */}
+              {siblingSection && currentUserRole !== 'teacher' && (
+                <button
+                  type="button"
+                  onClick={() => onSelectClass(siblingSection)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 border border-amber-300 rounded-xl text-amber-900 text-xs font-bold hover:bg-amber-100 transition cursor-pointer"
+                  title={`ወደ ${siblingSection} ቀይር`}
+                >
+                  <ArrowDownUp className="w-3.5 h-3.5 text-amber-700" />
+                  <span>ወደ "{siblingSection}" ቀይር</span>
+                </button>
+              )}
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="relative flex-1 sm:flex-initial">
+          {/* Search and Action Buttons Bar - Strictly Horizontal Scrollable Row (ወደ ጎን) */}
+          <div className="flex items-center gap-2 overflow-x-auto pb-1.5 scrollbar-thin max-w-full shrink-0">
+            {/* Search Input */}
+            <div className="relative min-w-[160px] shrink-0">
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="በተማሪ ስም ፈልግ..."
-                className="pl-9 pr-3 py-2 text-xs border border-slate-300 rounded-xl bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-600 w-full sm:w-44"
+                placeholder="በስም ፈልግ..."
+                className="pl-9 pr-3 py-2 text-xs border border-slate-300 rounded-xl bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-600 w-full"
               />
             </div>
 
-            {(canEdit || currentUserRole === 'leader') && (
-              <button
-                onClick={() => setShowAddModal(true)}
-                className="bg-blue-800 hover:bg-blue-700 text-white text-xs font-semibold px-3 py-2 rounded-xl transition flex items-center gap-1.5 shadow-sm"
+            {/* High-Visibility Excel Import Button (በዋናነት ወደ ጎን በመጀመሪያ ረድፍ) */}
+            {canEdit && (
+              <label
+                className={`bg-teal-700 hover:bg-teal-600 text-white text-xs font-bold px-3.5 py-2 rounded-xl transition flex items-center gap-1.5 shadow-md cursor-pointer shrink-0 border border-teal-800 ${
+                  isImporting ? 'opacity-70 pointer-events-none' : ''
+                }`}
+                title="የተማሪዎችን ስምና ውጤት ከExcel/CSV ፋይል ወደ ስርዓቱ ጫን"
               >
-                <UserPlus className="w-3.5 h-3.5" />
-                + ተማሪ
-              </button>
+                <Upload className="w-4 h-4 text-teal-200" />
+                <span>{isImporting ? 'በማንበብ ላይ...' : '📥 Excel ጫን'}</span>
+                <input
+                  type="file"
+                  accept=".xlsx,.xls,.csv,.txt"
+                  onChange={handleImportFile}
+                  disabled={isImporting}
+                  className="hidden"
+                />
+              </label>
             )}
 
+            {/* Excel Download & Template Buttons */}
+            <button
+              type="button"
+              onClick={handleExportXLSX}
+              className="bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-semibold px-3 py-2 rounded-xl transition flex items-center gap-1.5 shadow-sm cursor-pointer shrink-0"
+              title="የዚህን ክፍል የተማሪዎች ውጤት በExcel አውርድ"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Excel አውርድ</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleDownloadTemplate}
+              className="bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 text-xs font-semibold px-2.5 py-2 rounded-xl transition flex items-center gap-1 shadow-sm cursor-pointer shrink-0"
+              title="ለዚህ ክፍል የተማሪዎች መሙያ ዝግጁ የሆነ ባዶ የExcel ናሙና ቅጽ አውርድ"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-700" />
+              <span>ናሙና ቅጽ</span>
+            </button>
+
+            {/* Add Student & Batch Paste Buttons */}
+            {(canEdit || currentUserRole === 'leader') && (
+              <>
+                <button
+                  onClick={() => setShowAddModal(true)}
+                  className="bg-blue-800 hover:bg-blue-700 text-white text-xs font-semibold px-3 py-2 rounded-xl transition flex items-center gap-1.5 shadow-sm cursor-pointer shrink-0"
+                  title="አንድ አዲስ ተማሪ መዝግብ"
+                >
+                  <UserPlus className="w-3.5 h-3.5" />
+                  <span>+ ተማሪ</span>
+                </button>
+
+                <button
+                  onClick={() => setShowBatchAddModal(true)}
+                  className="bg-indigo-700 hover:bg-indigo-600 text-white text-xs font-semibold px-3 py-2 rounded-xl transition flex items-center gap-1.5 shadow-sm cursor-pointer shrink-0"
+                  title="የተማሪዎችን ስም ዝርዝር በአንድነት ለጥፈህ አስገባ (Batch Paste)"
+                >
+                  <Layers className="w-3.5 h-3.5" />
+                  <span>+ በቡድን አስገባ</span>
+                </button>
+              </>
+            )}
+
+            {/* Print / PDF Button */}
             <button
               onClick={() => window.print()}
-              className="bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold px-3 py-2 rounded-xl transition flex items-center gap-1.5 shadow-sm cursor-pointer"
+              className="bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold px-3 py-2 rounded-xl transition flex items-center gap-1.5 shadow-sm cursor-pointer shrink-0"
               title="ገጹን ወደ PDF ቀይር ወይም አትም"
             >
               <Printer className="w-3.5 h-3.5" />
-              Print
+              <span>Print</span>
             </button>
 
-            {/* Download dropdown or buttons */}
-            <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                onClick={handleExportXLSX}
-                className="bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-semibold px-3 py-2 rounded-xl transition flex items-center gap-1.5 shadow-sm cursor-pointer"
-                title="የዚህን ክፍል የተማሪዎች ውጤት ሙሉ በሙሉ በExcel (.xlsx) አውርድ"
-              >
-                <Download className="w-3.5 h-3.5" />
-                Excel አውርድ
-              </button>
-
-              <button
-                type="button"
-                onClick={handleDownloadTemplate}
-                className="bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 text-xs font-semibold px-2.5 py-2 rounded-xl transition flex items-center gap-1 shadow-sm cursor-pointer"
-                title="ለዚህ ክፍል የተማሪዎች መሙያ ዝግጁ የሆነ ባዶ የExcel ናሙና ቅጽ አውርድ"
-              >
-                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-700" />
-                ናሙና ቅጽ
-              </button>
-            </div>
-
+            {/* Clear / Delete Buttons */}
             {canEdit && (
               <>
-                <label
-                  className={`bg-teal-700 hover:bg-teal-600 text-white text-xs font-semibold px-3 py-2 rounded-xl transition flex items-center gap-1.5 shadow-sm cursor-pointer ${
-                    isImporting ? 'opacity-70 pointer-events-none' : ''
-                  }`}
-                  title="የተማሪዎችን ስምና ውጤት ከExcel/CSV ፋይል ወደ ስርዓቱ ጫን"
-                >
-                  <Upload className="w-3.5 h-3.5" />
-                  {isImporting ? 'በማንበብ ላይ...' : 'Excel ጫን'}
-                  <input
-                    type="file"
-                    accept=".xlsx,.xls,.csv,.txt"
-                    onChange={handleImportFile}
-                    disabled={isImporting}
-                    className="hidden"
-                  />
-                </label>
-
-                {/* Clear / Delete Buttons */}
                 <button
                   type="button"
                   onClick={handleClearClassScores}
                   disabled={students.length === 0}
-                  className="bg-amber-100 hover:bg-amber-200 text-amber-800 disabled:opacity-40 text-xs font-semibold px-3 py-2 rounded-xl transition flex items-center gap-1.5 border border-amber-300"
-                  title="የክፍሉን ተማሪዎች ውጤት በሙሉ አጽዳ (ደልት)"
+                  className="bg-amber-100 hover:bg-amber-200 text-amber-800 disabled:opacity-40 text-xs font-semibold px-3 py-2 rounded-xl transition flex items-center gap-1.5 border border-amber-300 shrink-0"
+                  title="የክፍሉን ተማሪዎች ውጤት በሙሉ አጽዳ"
                 >
                   <RotateCcw className="w-3.5 h-3.5" />
-                  ውጤት አጽዳ
+                  <span>ውጤት አጽዳ</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={handleClearAllStudents}
                   disabled={students.length === 0}
-                  className="bg-rose-50 hover:bg-rose-100 text-rose-700 disabled:opacity-40 text-xs font-semibold px-3 py-2 rounded-xl transition flex items-center gap-1.5 border border-rose-300"
-                  title="በዚህ ክፍል ያሉትን ተማሪዎች በሙሉ ከመዝገብ ሰርዝ (ደልት)"
+                  className="bg-rose-50 hover:bg-rose-100 text-rose-700 disabled:opacity-40 text-xs font-semibold px-3 py-2 rounded-xl transition flex items-center gap-1.5 border border-rose-300 shrink-0"
+                  title="በዚህ ክፍል ያሉትን ተማሪዎች በሙሉ ከመዝገብ ሰርዝ"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
-                  ተማሪዎችን ሰርዝ
+                  <span>ተማሪዎችን ሰርዝ</span>
                 </button>
               </>
             )}
           </div>
         </div>
 
-        {/* Navigation Tip Bar for Computers */}
+        {/* Navigation Tip Bar for Computers and Mobile Horizontal Scrolling */}
         <div className="mt-4 pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3 text-xs">
-          <div className="flex items-center gap-2 bg-blue-50/80 text-blue-900 border border-blue-200 px-3 py-1.5 rounded-xl font-medium">
+          <div className="flex flex-wrap items-center gap-2 bg-blue-50/90 text-blue-900 border border-blue-200 px-3 py-1.5 rounded-xl font-medium">
             <Compass className="w-4 h-4 text-blue-700 shrink-0" />
             <span>
-              <strong>የኮምፒውተር መመሪያ፦</strong> በኪቦርድ ቀስቶች (<strong>↑ ወደ ላይ</strong>፣ <strong>↓ ወደ ታች</strong>፣ <strong>→ ወደ ቀኝ</strong>፣ <strong>← ወደ ግራ</strong>) ወይም በ <strong>Enter</strong> በፍጥነት እየተዘዋወሩ ውጤት ማስገባት ይችላሉ። 0 ውጤቶች ባዶ ሆነዋል።
+              <strong>የውጤት መሙያ መመሪያ፦</strong> በኪቦርድ ቀስቶች (<strong>↑፣ ↓፣ →፣ ←</strong>) ወይም <strong>Enter</strong> እየተጫኑ ውጤት ይሙሉ፤ ሠንጠረዡ ከማያ ገጽ እንዳይወጣ <strong>ወደ ጎን (Horizontal Scroll ↔️)</strong> ይሸበለላል።
             </span>
           </div>
 
@@ -689,7 +799,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
       {/* Main Table with Sticky Header & Sticky Columns */}
       <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden">
         <div className="overflow-x-auto max-h-[72vh] overflow-y-auto relative scrollbar-thin">
-          <table className="w-full border-collapse text-left text-xs">
+          <table className="w-full min-w-[1100px] border-collapse text-left text-xs">
             <thead className="sticky top-0 z-20 bg-slate-100 shadow-sm">
               <tr className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200 uppercase tracking-wider text-center">
                 <th className="py-3 px-2 border-r border-slate-200 sticky left-0 z-30 bg-slate-100 w-12">
@@ -728,7 +838,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                   const isTopThree = s.rank !== undefined && s.rank <= 3;
                   return (
                     <tr
-                      key={s.id}
+                      key={`std_${s.id || 'item'}_${index}`}
                       className={`group hover:bg-slate-50/80 transition ${
                         isTopThree ? 'bg-amber-50/20' : ''
                       }`}
@@ -1031,29 +1141,29 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
 
       {/* Excel / CSV Import Confirmation & Preview Modal */}
       {importPreview && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
-            <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
-              <div className="w-10 h-10 rounded-xl bg-teal-50 border border-teal-200 flex items-center justify-center text-teal-700">
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-4 sm:p-6 shadow-2xl border border-slate-200 flex flex-col max-h-[90vh] my-auto animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center gap-3 pb-3 border-b border-slate-100 shrink-0">
+              <div className="w-10 h-10 rounded-xl bg-teal-50 border border-teal-200 flex items-center justify-center text-teal-700 shrink-0">
                 <FileSpreadsheet className="w-5 h-5" />
               </div>
-              <div>
-                <h3 className="text-base font-bold text-slate-900">
+              <div className="min-w-0 flex-1">
+                <h3 className="text-base font-bold text-slate-900 truncate">
                   የተማሪዎች መጫኛ ማረጋገጫ (Excel/CSV)
                 </h3>
-                <p className="text-xs text-slate-500">
+                <p className="text-xs text-slate-500 truncate">
                   ፋይል፦ <span className="font-semibold text-slate-700">{importPreview.fileName}</span> (በድምሩ {importPreview.totalStudents} ተማሪዎች)
                 </p>
               </div>
             </div>
 
-            <div className="py-4 space-y-4">
+            <div className="py-3 space-y-3.5 overflow-y-auto max-h-[58vh] pr-1 scrollbar-thin">
               {/* Classes Breakdown */}
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-2">
                   በፋይሉ ውስጥ የተገኙ ክፍሎች ({importPreview.classesSummary.length})፦
                 </label>
-                <div className="grid grid-cols-2 gap-2 max-h-40 overflow-y-auto p-2.5 bg-slate-50 rounded-xl border border-slate-200 text-xs">
+                <div className="grid grid-cols-2 gap-2 max-h-36 overflow-y-auto p-2.5 bg-slate-50 rounded-xl border border-slate-200 text-xs">
                   {importPreview.classesSummary.map((item) => {
                     const isCurrent = item.className === selectedClass;
                     return (
@@ -1075,40 +1185,68 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                 </div>
               </div>
 
-              {/* Import Target Choice if multi-class */}
-              {importPreview.isMultiClass ? (
-                <div className="space-y-2">
-                  <label className="block text-xs font-bold text-slate-700">
-                    የመጫኛ አማራጭ ይምረጡ፦
-                  </label>
+              {/* Import Target Choice */}
+              <div className="space-y-2">
+                <label className="block text-xs font-bold text-slate-700">
+                  የመጫኛ አማራጭ ይምረጡ፦
+                </label>
 
-                  {currentUserRole !== 'teacher' && (
-                    <label
-                      onClick={() => setImportMode('all_classes')}
-                      className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition ${
-                        importMode === 'all_classes'
-                          ? 'bg-blue-50/70 border-blue-400 text-blue-950'
-                          : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
-                      }`}
-                    >
-                      <input
-                        type="radio"
-                        name="importMode"
-                        checked={importMode === 'all_classes'}
-                        onChange={() => setImportMode('all_classes')}
-                        className="mt-0.5"
-                      />
-                      <div>
-                        <div className="text-xs font-bold">
-                          ✓ ሁሉንም ክፍሎች በአንድ ጊዜ ወደየራሳቸው ክፍል ጫን ({importPreview.totalStudents} ተማሪዎች)
-                        </div>
-                        <div className="text-[11px] text-slate-500 mt-0.5">
-                          እያንዳንዱ ተማሪ ለተመደበበት ትክክለኛ ክፍል ብቻ ይገባል፤ አንዱ ከሌላው አይቀላቀልም።
-                        </div>
+                {/* Option 1: Load all students into selected class */}
+                <label
+                  onClick={() => setImportMode('all_into_selected')}
+                  className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition ${
+                    importMode === 'all_into_selected'
+                      ? 'bg-emerald-50/80 border-emerald-400 text-emerald-950 font-semibold'
+                      : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="importMode"
+                    checked={importMode === 'all_into_selected'}
+                    onChange={() => setImportMode('all_into_selected')}
+                    className="mt-0.5"
+                  />
+                  <div>
+                    <div className="text-xs font-bold text-emerald-900">
+                      ✓ በፋይሉ ውስጥ ያሉትን ሁሉንም ({importPreview.totalStudents}) ተማሪዎች ወደ "{selectedClass}" ጫን
+                    </div>
+                    <div className="text-[11px] text-slate-500 mt-0.5">
+                      በፋይሉ ውስጥ ያለው ክፍል ስም ልዩነት ቢኖረውም እንኳን ሁሉም ተማሪዎች ወደ {selectedClass} ገብተው እንዲመዘገቡ ያደርጋል።
+                    </div>
+                  </div>
+                </label>
+
+                {/* Option 2: Distribute across all classes */}
+                {importPreview.isMultiClass && currentUserRole !== 'teacher' && (
+                  <label
+                    onClick={() => setImportMode('all_classes')}
+                    className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition ${
+                      importMode === 'all_classes'
+                        ? 'bg-blue-50/70 border-blue-400 text-blue-950'
+                        : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="importMode"
+                      checked={importMode === 'all_classes'}
+                      onChange={() => setImportMode('all_classes')}
+                      className="mt-0.5"
+                    />
+                    <div>
+                      <div className="text-xs font-bold">
+                        በፋይሉ ውስጥ ባለው የክፍል ስም መሠረት በየክፍላቸው መድብ ({importPreview.classesSummary.length} ክፍሎች)
                       </div>
-                    </label>
-                  )}
+                      <div className="text-[11px] text-slate-500 mt-0.5">
+                        እያንዳንዱ ተማሪ ለተመደበበት ትክክለኛ ክፍል ብቻ ይገባል።
+                      </div>
+                    </div>
+                  </label>
+                )}
 
+                {/* Option 3: Only students matched to selected class */}
+                {importPreview.selectedClassCount > 0 && importPreview.selectedClassCount < importPreview.totalStudents && (
                   <label
                     onClick={() => setImportMode('selected_only')}
                     className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition ${
@@ -1126,20 +1264,15 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
                     />
                     <div>
                       <div className="text-xs font-bold">
-                        ለአሁኑ ክፍል ({selectedClass}) ብቻ ጫን
-                        {importPreview.selectedClassCount > 0 ? ` (${importPreview.selectedClassCount} ተማሪዎች)` : ''}
+                        ለ"{selectedClass}" ብቻ የተለዩትን ({importPreview.selectedClassCount}) ተማሪዎች ጫን
                       </div>
                       <div className="text-[11px] text-slate-500 mt-0.5">
-                        ከፋይሉ ውስጥ ለ{selectedClass} ብቻ የሚመለከተው ተማሪ ተለይቶ ይገባል።
+                        ከፋይሉ ውስጥ የ{selectedClass} ስም ያለባቸው ተማሪዎች ብቻ ይገባሉ።
                       </div>
                     </div>
                   </label>
-                </div>
-              ) : (
-                <div className="p-3 bg-blue-50/60 rounded-xl border border-blue-200 text-xs text-blue-900">
-                  ተማሪዎቹ በቀጥታ ወደ <strong>{selectedClass}</strong> ክፍል ብቻ ይገባሉ።
-                </div>
-              )}
+                )}
+              </div>
 
               {/* Append vs Replace Choice */}
               <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-1.5">
@@ -1168,7 +1301,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
             </div>
 
             {/* Actions */}
-            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100 shrink-0 mt-auto">
               <button
                 type="button"
                 onClick={() => setImportPreview(null)}
@@ -1183,6 +1316,90 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
               >
                 <Check className="w-4 h-4" />
                 አሁን ጫን
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Batch Add Modal: Paste student roster directly into this class */}
+      {showBatchAddModal && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
+              <div className="w-10 h-10 rounded-xl bg-indigo-50 border border-indigo-200 flex items-center justify-center text-indigo-700">
+                <Layers className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900">
+                  ተማሪዎችን በአንድነት አስገባ (Batch Paste)
+                </h3>
+                <p className="text-xs text-slate-500">
+                  ክፍል፦ <span className="font-bold text-slate-800">{selectedClass}</span>
+                </p>
+              </div>
+            </div>
+
+            <div className="py-4 space-y-3 text-xs">
+              <div>
+                <label className="block text-slate-700 font-bold mb-1">
+                  የተማሪዎች ስም ዝርዝር (በየመስመሩ አንዱን ስም ያስገቡ ወይም ይለጥፉ)፦
+                </label>
+                <textarea
+                  rows={8}
+                  value={batchNamesText}
+                  onChange={(e) => setBatchNamesText(e.target.value)}
+                  placeholder={`ምሳሌ፦\nዮሐንስ ተስፋዬ\nሳራ መንግስቱ\nዳዊት አበበ (ወ)\nሊዲያ ደስታ (ሴ)`}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-mono focus:ring-2 focus:ring-indigo-600 focus:outline-none"
+                  autoFocus
+                />
+              </div>
+
+              <div className="flex items-center justify-between bg-slate-50 p-2.5 rounded-xl border border-slate-200">
+                <span className="text-slate-600 font-semibold">ነባሪ ፆታ (ላልተገለጹት)፦</span>
+                <div className="flex items-center gap-3">
+                  <label className="flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="batchGenderClass"
+                      checked={batchDefaultGender === 'ወ'}
+                      onChange={() => setBatchDefaultGender('ወ')}
+                    />
+                    <span className="font-bold text-blue-700">ወንድ (ወ)</span>
+                  </label>
+                  <label className="flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="batchGenderClass"
+                      checked={batchDefaultGender === 'ሴ'}
+                      onChange={() => setBatchDefaultGender('ሴ')}
+                    />
+                    <span className="font-bold text-rose-700">ሴት (ሴ)</span>
+                  </label>
+                </div>
+              </div>
+
+              <p className="text-[11px] text-slate-500">
+                💡 <strong>ጠቃሚ ማስታወሻ፦</strong> ከ Word፣ Excel ወይም ከሌላ ማስታወሻ የተማሪዎች ስም ኮፒ አድርገው እዚህ በመለጠፍ በአንድ ቅጽበት ወደ {selectedClass} ማስገባት ይችላሉ።
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setShowBatchAddModal(false)}
+                className="px-4 py-2 text-xs text-slate-600 hover:bg-slate-100 rounded-xl font-medium"
+              >
+                ሰርዝ
+              </button>
+              <button
+                type="button"
+                onClick={handleBatchAddStudents}
+                disabled={!batchNamesText.trim()}
+                className="px-5 py-2 text-xs bg-indigo-700 hover:bg-indigo-600 disabled:opacity-50 text-white rounded-xl font-bold shadow flex items-center gap-1.5 cursor-pointer"
+              >
+                <Check className="w-4 h-4" />
+                አሁን አስገባ
               </button>
             </div>
           </div>

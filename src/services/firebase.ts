@@ -3,6 +3,7 @@ import { getDatabase, ref, onValue, set, get, Database } from 'firebase/database
 import { getFirestore, doc, onSnapshot, setDoc, Firestore } from 'firebase/firestore';
 import { AppData } from '../types';
 import { INITIAL_APP_DATA } from '../constants/initialData';
+import { sanitizeAndDeduplicateAppData } from '../utils/idGenerator';
 
 export interface FirebaseProjectProfile {
   id: string;
@@ -211,7 +212,7 @@ export const loadStoredLocalData = (): AppData => {
 
     const source = bestSource || candidates[0] || {};
 
-    return {
+    const rawData: AppData = {
       ...INITIAL_APP_DATA,
       ...source,
       pins: { ...INITIAL_APP_DATA.pins, ...(source.pins || {}) },
@@ -226,6 +227,8 @@ export const loadStoredLocalData = (): AppData => {
       choirMembers: source.choirMembers || [],
       spiritualMembers: source.spiritualMembers || []
     };
+
+    return sanitizeAndDeduplicateAppData(rawData);
   } catch (e) {
     console.error('Error reading localStorage data', e);
   }
@@ -234,10 +237,11 @@ export const loadStoredLocalData = (): AppData => {
 
 export const saveToLocalStorage = (data: AppData) => {
   try {
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(data));
+    const sanitized = sanitizeAndDeduplicateAppData(data);
+    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(sanitized));
     // If data has actual student content, keep safety backup
-    if (countStudentsInData(data) > 0 || (data.teachers && data.teachers.length > 0)) {
-      localStorage.setItem(BACKUP_STORAGE_KEY, JSON.stringify(data));
+    if (countStudentsInData(sanitized) > 0 || (sanitized.teachers && sanitized.teachers.length > 0)) {
+      localStorage.setItem(BACKUP_STORAGE_KEY, JSON.stringify(sanitized));
     }
   } catch (e) {
     console.error('Error saving to localStorage', e);
@@ -339,8 +343,10 @@ export const subscribeToAppData = (
         years: (val.years && val.years.length > 0) ? val.years : currentLocal.years
       };
 
-      saveToLocalStorage(mergedData);
-      onData(mergedData);
+      const sanitizedMerged = sanitizeAndDeduplicateAppData(mergedData);
+
+      saveToLocalStorage(sanitizedMerged);
+      onData(sanitizedMerged);
 
       currentDiagnostic = {
         status: 'connected',

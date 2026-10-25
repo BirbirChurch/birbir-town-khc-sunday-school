@@ -68,6 +68,30 @@ export interface AnnualPlanItem {
   role: string;
 }
 
+export type WeeklyAttendanceStatus = 'P' | 'A' | 'E' | '';
+
+export interface StudentWeekAttendanceMap {
+  [weekNumber: number]: WeeklyAttendanceStatus;
+}
+
+export interface ClassWeeklyAttendanceMap {
+  [studentId: string]: StudentWeekAttendanceMap;
+}
+
+export interface YearWeeklyAttendanceMap {
+  [className: string]: ClassWeeklyAttendanceMap;
+}
+
+export interface WeeklyAttendanceData {
+  [year: string]: YearWeeklyAttendanceMap;
+}
+
+export interface WeekDatesData {
+  [year: string]: {
+    [weekNumber: number]: string; // ISO date YYYY-MM-DD
+  };
+}
+
 export interface AppData {
   years: string[];
   pins: {
@@ -84,6 +108,8 @@ export interface AppData {
   spiritualGroups: string[];
   spiritualMembers: SpiritualMember[];
   attendance: AbsenteeRecord[];
+  weeklyAttendance?: WeeklyAttendanceData;
+  weekDates?: WeekDatesData;
   plans: AnnualPlanItem[];
   students: {
     [year: string]: {
@@ -91,3 +117,4 @@ export interface AppData {
     };
   };
 }
+

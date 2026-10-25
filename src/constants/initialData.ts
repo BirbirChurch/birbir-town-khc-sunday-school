@@ -106,6 +106,8 @@ export const INITIAL_APP_DATA: AppData = {
   spiritualGroups: DEFAULT_SPIRITUAL_GROUPS,
   spiritualMembers: [],
   attendance: [],
+  weeklyAttendance: {},
+  weekDates: {},
   plans: DEFAULT_ANNUAL_PLAN,
   students: {}
 };

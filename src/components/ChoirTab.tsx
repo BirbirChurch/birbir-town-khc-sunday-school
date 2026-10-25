@@ -7,6 +7,7 @@ interface ChoirTabProps {
   groups: string[];
   members: ChoirMember[];
   onAddMember: (member: Omit<ChoirMember, 'id'>) => void;
+  onAddMembersBatch?: (members: Omit<ChoirMember, 'id'>[]) => void;
   onDeleteMember: (id: number) => void;
   onAddGroup: (groupName: string) => void;
   currentUserRole: Role | null;
@@ -16,6 +17,7 @@ export const ChoirTab: React.FC<ChoirTabProps> = ({
   groups,
   members,
   onAddMember,
+  onAddMembersBatch,
   onDeleteMember,
   onAddGroup,
   currentUserRole
@@ -83,8 +85,8 @@ export const ChoirTab: React.FC<ChoirTabProps> = ({
         return;
       }
 
-      let count = 0;
       const startIdx = (rows[0][0]?.includes('ተ.ቁ') || rows[0][1]?.includes('ስም')) ? 1 : 0;
+      const membersToImport: Omit<ChoirMember, 'id'>[] = [];
 
       for (let i = startIdx; i < rows.length; i++) {
         const cols = rows[i];
@@ -97,18 +99,25 @@ export const ChoirTab: React.FC<ChoirTabProps> = ({
         const phoneVal = cols[5] || '';
 
         if (nameVal.trim()) {
-          onAddMember({
+          membersToImport.push({
             name: nameVal.trim(),
             age: ageVal,
             gender: genderVal,
             group: groupVal,
             phone: phoneVal
           });
-          count++;
         }
       }
 
-      alert(`✓ ${count} የመዘምራን አባላት ከኤክሴል/CSV በተሳካ ሁኔታ ተጭነዋል!`);
+      if (membersToImport.length > 0) {
+        if (onAddMembersBatch) {
+          onAddMembersBatch(membersToImport);
+        } else {
+          membersToImport.forEach((m) => onAddMember(m));
+        }
+      }
+
+      alert(`✓ ${membersToImport.length} የመዘምራን አባላት ከኤክሴል/CSV በተሳካ ሁኔታ ተጭነዋል!`);
     } catch {
       alert('ፋይሉን ማንበብ አልተሳካም።');
     }
@@ -228,7 +237,7 @@ export const ChoirTab: React.FC<ChoirTabProps> = ({
                 </tr>
               ) : (
                 filteredMembers.map((m, idx) => (
-                  <tr key={m.id} className="hover:bg-slate-50 transition">
+                  <tr key={`choir_${m.id || 'm'}_${idx}`} className="hover:bg-slate-50 transition">
                     <td className="py-2.5 px-3 border-r border-slate-200 text-slate-500 font-medium">
                       {idx + 1}
                     </td>

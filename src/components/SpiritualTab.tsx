@@ -7,6 +7,7 @@ interface SpiritualTabProps {
   groups: string[];
   members: SpiritualMember[];
   onAddMember: (member: Omit<SpiritualMember, 'id'>) => void;
+  onAddMembersBatch?: (members: Omit<SpiritualMember, 'id'>[]) => void;
   onDeleteMember: (id: number) => void;
   onAddGroup: (groupName: string) => void;
   currentUserRole: Role | null;
@@ -16,6 +17,7 @@ export const SpiritualTab: React.FC<SpiritualTabProps> = ({
   groups,
   members,
   onAddMember,
+  onAddMembersBatch,
   onDeleteMember,
   onAddGroup,
   currentUserRole
@@ -80,8 +82,8 @@ export const SpiritualTab: React.FC<SpiritualTabProps> = ({
         return;
       }
 
-      let count = 0;
       const startIdx = (rows[0][0]?.includes('ተ.ቁ') || rows[0][1]?.includes('ስም')) ? 1 : 0;
+      const membersToImport: Omit<SpiritualMember, 'id'>[] = [];
 
       for (let i = startIdx; i < rows.length; i++) {
         const cols = rows[i];
@@ -93,17 +95,24 @@ export const SpiritualTab: React.FC<SpiritualTabProps> = ({
         const groupVal = cols[4] || selectedGroup;
 
         if (nameVal.trim()) {
-          onAddMember({
+          membersToImport.push({
             name: nameVal.trim(),
             age: ageVal,
             gender: genderVal,
             group: groupVal
           });
-          count++;
         }
       }
 
-      alert(`✓ ${count} መንፈሳዊ ትምህርት ተማሪዎች ከኤክሴል/CSV በተሳካ ሁኔታ ተጭነዋል!`);
+      if (membersToImport.length > 0) {
+        if (onAddMembersBatch) {
+          onAddMembersBatch(membersToImport);
+        } else {
+          membersToImport.forEach((m) => onAddMember(m));
+        }
+      }
+
+      alert(`✓ ${membersToImport.length} መንፈሳዊ ትምህርት ተማሪዎች ከኤክሴል/CSV በተሳካ ሁኔታ ተጭነዋል!`);
     } catch {
       alert('ፋይሉን ማንበብ አልተሳካም።');
     }
@@ -222,7 +231,7 @@ export const SpiritualTab: React.FC<SpiritualTabProps> = ({
                 </tr>
               ) : (
                 filteredMembers.map((m, idx) => (
-                  <tr key={m.id} className="hover:bg-slate-50 transition">
+                  <tr key={`spir_${m.id || 'm'}_${idx}`} className="hover:bg-slate-50 transition">
                     <td className="py-2.5 px-3 border-r border-slate-200 text-slate-500 font-medium">
                       {idx + 1}
                     </td>

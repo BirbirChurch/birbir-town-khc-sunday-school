@@ -190,8 +190,8 @@ export const LoginPortal: React.FC<LoginPortalProps> = ({
                 >
                   {[...teachers]
                     .sort((a, b) => a.name.localeCompare(b.name, 'am'))
-                    .map((t) => (
-                      <option key={t.id} value={t.id}>
+                    .map((t, idx) => (
+                      <option key={`teach_opt_${t.id}_${idx}`} value={t.id}>
                         {t.name} ({t.assignedClass}{t.assignedSubject ? ` - ${t.assignedSubject}` : ''})
                       </option>
                     ))}
