@@ -50,6 +50,7 @@ interface ClassesTabProps {
   onDeleteStudent: (studentId: number) => void;
   onClearClassStudents?: (className: string) => void;
   onClearClassScores?: (className: string) => void;
+  onGoToAttendance?: () => void;
   currentUserRole: Role | null;
   loggedInTeacher: Teacher | null;
   subjects?: string[];
@@ -71,6 +72,7 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
   onDeleteStudent,
   onClearClassStudents,
   onClearClassScores,
+  onGoToAttendance,
   currentUserRole,
   loggedInTeacher,
   subjects = [],
@@ -697,6 +699,17 @@ export const ClassesTab: React.FC<ClassesTabProps> = ({
             )}
 
             {/* Excel Download & Template Buttons */}
+            {onGoToAttendance && (
+              <button
+                type="button"
+                onClick={onGoToAttendance}
+                className="bg-emerald-800 hover:bg-emerald-700 text-amber-300 border border-emerald-600 text-xs font-bold px-3 py-2 rounded-xl transition flex items-center gap-1.5 shadow-md cursor-pointer shrink-0"
+                title="ወደ የተማሪዎች አተንዳንስ ገጽ ሂድ"
+              >
+                <span>📅 የተማሪዎች አተንዳንስ</span>
+              </button>
+            )}
+
             <button
               type="button"
               onClick={handleExportXLSX}

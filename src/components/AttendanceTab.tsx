@@ -60,6 +60,7 @@ interface AttendanceTabProps {
   onAddAttendanceBatch?: (records: Omit<AbsenteeRecord, 'id'>[]) => void;
   onDeleteAttendance: (id: number) => void;
   onAddStudentToClass?: (className: string, student: Omit<Student, 'id'>) => void;
+  onUpdateStudent?: (student: Student) => void;
   currentUserRole: Role | null;
   loggedInTeacher?: Teacher | null;
 }
@@ -82,6 +83,7 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
   onAddAttendanceBatch,
   onDeleteAttendance,
   onAddStudentToClass,
+  onUpdateStudent,
   currentUserRole,
   loggedInTeacher
 }) => {
@@ -276,6 +278,81 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
     else next = '';
 
     onUpdateStudentWeeklyAttendance(currentYear, selectedClass, studentId, weekNumber, next);
+  };
+
+  // Keyboard entry & arrow navigation for 40-week cells (score-entry style)
+  const handleAttendanceKeyDown = (
+    e: React.KeyboardEvent<HTMLInputElement>,
+    rowIndex: number,
+    colIndex: number,
+    studentId: number | string,
+    weekNumber: number
+  ) => {
+    const totalRows = Math.max(TARGET_ROWS_COUNT, classStudents.length);
+    const totalCols = displayedWeeks.length;
+    const key = e.key;
+
+    let moveDown = false;
+    let targetRow = rowIndex;
+    let targetCol = colIndex;
+
+    if (key === '1' || key.toLowerCase() === 'p' || key === 'ተ') {
+      e.preventDefault();
+      onUpdateStudentWeeklyAttendance(currentYear, selectedClass, studentId, weekNumber, 'P');
+      moveDown = true;
+    } else if (key === '0' || key.toLowerCase() === 'a' || key === 'ቀ') {
+      e.preventDefault();
+      onUpdateStudentWeeklyAttendance(currentYear, selectedClass, studentId, weekNumber, 'A');
+      moveDown = true;
+    } else if (key === '2' || key.toLowerCase() === 'e' || key === 'ፈ') {
+      e.preventDefault();
+      onUpdateStudentWeeklyAttendance(currentYear, selectedClass, studentId, weekNumber, 'E');
+      moveDown = true;
+    } else if (key === 'Backspace' || key === 'Delete' || key === ' ') {
+      e.preventDefault();
+      onUpdateStudentWeeklyAttendance(currentYear, selectedClass, studentId, weekNumber, '');
+    } else if (key === 'ArrowDown' || key === 'Enter') {
+      e.preventDefault();
+      moveDown = true;
+    } else if (key === 'ArrowUp') {
+      e.preventDefault();
+      targetRow = Math.max(0, rowIndex - 1);
+    } else if (key === 'ArrowRight') {
+      e.preventDefault();
+      if (colIndex < totalCols - 1) {
+        targetCol = colIndex + 1;
+      }
+    } else if (key === 'ArrowLeft') {
+      e.preventDefault();
+      if (colIndex > 0) {
+        targetCol = colIndex - 1;
+      }
+    } else {
+      return;
+    }
+
+    if (moveDown) {
+      targetRow = Math.min(totalRows - 1, rowIndex + 1);
+    }
+
+    const nextElem = document.getElementById(`att-cell-input-${targetRow}-${targetCol}`) as HTMLInputElement | null;
+    if (nextElem) {
+      nextElem.focus();
+      nextElem.select();
+    }
+  };
+
+  const handleStudentInfoChange = (
+    student: Student,
+    field: 'name' | 'age' | 'gender',
+    val: string
+  ) => {
+    if (onUpdateStudent) {
+      onUpdateStudent({
+        ...student,
+        [field]: val
+      });
+    }
   };
 
   // Mark all students present for a specific week
@@ -840,27 +917,84 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
             </div>
           </div>
 
-          {/* Quick Instruction Banner */}
-          <div className="bg-emerald-50/70 border border-emerald-200/90 rounded-xl px-4 py-2.5 text-xs text-emerald-950 flex flex-wrap items-center justify-between gap-2 print:hidden">
+          {/* Dedicated Quick Batch Tools Bar for Currently Selected Week */}
+          <div className="bg-gradient-to-r from-emerald-900 via-slate-900 to-teal-900 text-white p-3.5 rounded-2xl shadow-md border border-emerald-700/50 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 print:hidden">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2 bg-white/10 px-3 py-1.5 rounded-xl border border-white/20">
+                <Clock className="w-4 h-4 text-emerald-400" />
+                <label className="text-xs font-bold text-emerald-100">የተመረጠው ሳምንት፦</label>
+                <select
+                  value={selectedWeek}
+                  onChange={(e) => {
+                    const w = parseInt(e.target.value, 10);
+                    setSelectedWeek(w);
+                    if (weekDates?.[w]) setCurrentWeekDate(weekDates[w]);
+                  }}
+                  className="bg-slate-800 text-white text-xs font-extrabold rounded-lg px-2.5 py-1 focus:outline-none focus:ring-2 focus:ring-emerald-400 cursor-pointer"
+                >
+                  {Array.from({ length: 40 }, (_, i) => i + 1).map((w) => (
+                    <option key={`opt_roster_w_${w}`} value={w}>
+                      ሳምንት {w} {weekDates?.[w] ? `(${weekDates[w]})` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex items-center gap-2 bg-white/10 px-3 py-1.5 rounded-xl border border-white/20">
+                <Calendar className="w-4 h-4 text-amber-300" />
+                <label className="text-xs font-bold text-amber-100">ቀን፦</label>
+                <input
+                  type="date"
+                  value={weekDates?.[selectedWeek] || currentWeekDate}
+                  onChange={(e) => handleUpdateWeekDate(selectedWeek, e.target.value)}
+                  className="bg-slate-800 text-white text-xs font-bold rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-emerald-400"
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => handleMarkAllPresent(selectedWeek)}
+                className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-3 py-1.5 rounded-xl transition flex items-center gap-1.5 shadow cursor-pointer border border-emerald-400/30"
+                title={`በሳምንት ${selectedWeek} ያሉትን ሁሉንም ተማሪዎች "ተገኝቷል (ተ)" አድርግ`}
+              >
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-200" />
+                <span>✓ ለሁሉም "ተገኝ (P)" ምላ</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleMarkAllAbsent(selectedWeek)}
+                className="bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold px-3 py-1.5 rounded-xl transition flex items-center gap-1.5 shadow cursor-pointer border border-rose-400/30"
+                title={`በሳምንት ${selectedWeek} ያሉትን ሁሉንም ተማሪዎች "ቀርቷል (ቀ)" አድርግ`}
+              >
+                <XCircle className="w-3.5 h-3.5 text-rose-200" />
+                <span>❌ ለሁሉም "ቀርቷል (A)" ምላ</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleClearWeek(selectedWeek)}
+                className="bg-slate-700 hover:bg-slate-600 text-slate-100 text-xs font-bold px-3 py-1.5 rounded-xl transition flex items-center gap-1.5 cursor-pointer border border-slate-500/40"
+                title={`የሳምንት ${selectedWeek} ምዝገባ አጽዳ`}
+              >
+                <Trash2 className="w-3.5 h-3.5 text-slate-300" />
+                <span>🔄 ሳምንቱን አጽዳ</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Quick Instruction Banner with Keyboard Shortcuts */}
+          <div className="bg-blue-50/90 border border-blue-200/90 rounded-xl px-4 py-2.5 text-xs text-blue-950 flex flex-wrap items-center justify-between gap-2 print:hidden shadow-xs">
             <div className="flex items-center gap-2">
-              <Info className="w-4 h-4 text-emerald-600 shrink-0" />
+              <Info className="w-4 h-4 text-blue-700 shrink-0" />
               <span>
-                <strong>ለእያንዳንዱ ክፍል 40 መስመር ተዘጋጅቷል፦</strong> ከታች ባዶ መስመሮች ላይ የተማሪ ስም በቀጥታ በመጻፍ መመዝገብ ይችላሉ። ምልክቱን ለመቀየር ጠቅ (click) ያድርጉ፦{' '}
-                <span className="inline-block bg-emerald-600 text-white font-bold px-1.5 py-0.2 rounded text-[10px]">
-                  ተ (ተገኝቷል)
-                </span>{' '}
-                &rarr;{' '}
-                <span className="inline-block bg-rose-600 text-white font-bold px-1.5 py-0.2 rounded text-[10px]">
-                  ቀ (ቀርቷል)
-                </span>{' '}
-                &rarr;{' '}
-                <span className="inline-block bg-amber-500 text-white font-bold px-1.5 py-0.2 rounded text-[10px]">
-                  ፈ (ፍቃድ)
-                </span>
+                <strong>የኪቦርድ ውጤት መሙያ መመሪያ፦</strong> ሳጥኑ ላይ ሆነው <strong>1</strong> (ተገኝ/P) | <strong>0</strong> (ቀርቷል/A) | <strong>2</strong> (ፍቃድ/E) | <strong>Backspace/Space</strong> (አጽዳ) ሲጫኑ በራሱ ወደ ታች ይወርዳል። በኪቦርድ ቀስቶች (<strong>↑ ↓ → ←</strong>) እና <strong>Enter</strong> ቀጥታ አሳሽ።
               </span>
             </div>
-            <div className="text-[11px] font-semibold text-emerald-800">
-              40 መስመሮች • 40 ሳምንታት (የዓመቱ ሙሉ የሰንበት ቀናት)
+            <div className="text-[11px] font-extrabold text-blue-900 bg-blue-100/80 px-2.5 py-0.5 rounded-lg border border-blue-300">
+              40 መስመሮች • 40 ሳምንታት
             </div>
           </div>
 
@@ -878,6 +1012,9 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                       የተማሪው ሙሉ ስም
                     </th>
                     <th className="py-2.5 px-2 border-r border-slate-200 w-12 sticky left-[210px] bg-slate-100 z-40 print:static print:bg-slate-200 print:border-slate-900">
+                      ዕድሜ
+                    </th>
+                    <th className="py-2.5 px-2 border-r border-slate-200 w-12 sticky left-[258px] bg-slate-100 z-40 print:static print:bg-slate-200 print:border-slate-900">
                       ፆታ
                     </th>
 
@@ -951,64 +1088,88 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
 
                           {/* Student Name (Sticky) */}
                           <td className="py-2 px-3 border-r border-slate-200 text-left font-bold text-slate-900 sticky left-10 bg-white group-hover:bg-slate-50 z-20 truncate max-w-[170px] print:static print:border-slate-900">
-                            {student.name}
+                            {onUpdateStudent ? (
+                              <input
+                                type="text"
+                                value={student.name}
+                                onChange={(e) => handleStudentInfoChange(student, 'name', e.target.value)}
+                                className="w-full bg-transparent border-b border-transparent hover:border-slate-300 focus:border-emerald-600 focus:bg-white px-1 py-0.5 rounded text-xs outline-none font-bold"
+                              />
+                            ) : (
+                              <span>{student.name}</span>
+                            )}
+                          </td>
+
+                          {/* Age (Sticky) */}
+                          <td className="py-2 px-1 border-r border-slate-200 text-slate-700 font-semibold sticky left-[210px] bg-white group-hover:bg-slate-50 z-20 print:static print:border-slate-900">
+                            {onUpdateStudent ? (
+                              <input
+                                type="text"
+                                value={student.age || '12'}
+                                onChange={(e) => handleStudentInfoChange(student, 'age', e.target.value)}
+                                className="w-10 text-center bg-transparent border-b border-transparent hover:border-slate-300 focus:border-emerald-600 focus:bg-white px-1 py-0.5 rounded text-xs outline-none"
+                              />
+                            ) : (
+                              <span>{student.age || '12'}</span>
+                            )}
                           </td>
 
                           {/* Gender (Sticky) */}
-                          <td className="py-2 px-2 border-r border-slate-200 sticky left-[210px] bg-white group-hover:bg-slate-50 z-20 print:static print:border-slate-900">
-                            <span
-                              className={`font-bold ${
-                                student.gender === 'ወ' ? 'text-blue-600' : 'text-rose-600'
-                              }`}
-                            >
-                              {student.gender || 'ወ'}
-                            </span>
+                          <td className="py-2 px-2 border-r border-slate-200 sticky left-[258px] bg-white group-hover:bg-slate-50 z-20 print:static print:border-slate-900">
+                            {onUpdateStudent ? (
+                              <select
+                                value={student.gender || 'ወ'}
+                                onChange={(e) => handleStudentInfoChange(student, 'gender', e.target.value)}
+                                className="bg-transparent border-b border-transparent hover:border-slate-300 focus:border-emerald-600 rounded px-0.5 py-0.5 text-xs outline-none font-bold text-slate-800"
+                              >
+                                <option value="ወ">ወ</option>
+                                <option value="ሴ">ሴ</option>
+                              </select>
+                            ) : (
+                              <span
+                                className={`font-bold ${
+                                  student.gender === 'ወ' ? 'text-blue-600' : 'text-rose-600'
+                                }`}
+                              >
+                                {student.gender || 'ወ'}
+                              </span>
+                            )}
                           </td>
 
-                          {/* 40 Week Toggle Cells */}
-                          {displayedWeeks.map((w) => {
+                          {/* 40 Week Attendance Input Cells (Cell-by-Cell Score Entry Style) */}
+                          {displayedWeeks.map((w, wIndex) => {
                             const val = currentClassAttendance[student.id]?.[w] || '';
+                            const displayVal = val === 'P' ? 'ተ' : val === 'A' ? 'ቀ' : val === 'E' ? 'ፈ' : '';
                             return (
                               <td
                                 key={`cell_${student.id}_${w}`}
-                                onClick={() => handleCycleStatus(student.id, w)}
-                                className={`py-1 px-0.5 border-r border-slate-200 text-center font-bold cursor-pointer transition select-none print:border-slate-900 ${
-                                  selectedWeek === w ? 'bg-emerald-50/40' : ''
-                                } ${
-                                  val === 'P'
-                                    ? 'hover:bg-emerald-100/70'
-                                    : val === 'A'
-                                    ? 'hover:bg-rose-100/70'
-                                    : val === 'E'
-                                    ? 'hover:bg-amber-100/70'
-                                    : 'hover:bg-slate-100'
+                                className={`py-1 px-0.5 border-r border-slate-200 text-center font-bold transition select-none print:border-slate-900 ${
+                                  selectedWeek === w ? 'bg-emerald-50/70' : ''
                                 }`}
-                                title={`${student.name} - ሳምንት ${w}: ${
-                                  val === 'P'
-                                    ? 'ተገኝቷል'
-                                    : val === 'A'
-                                    ? 'ቀርቷል'
-                                    : val === 'E'
-                                    ? 'ፍቃድ'
-                                    : 'ያልተመዘገበ'
-                                } (ለመቀየር ጠቅ ያድርጉ)`}
                               >
-                                {val === 'P' && (
-                                  <span className="inline-flex items-center justify-center w-5 h-5 rounded bg-emerald-600 text-white text-[10px] font-black print:text-black print:bg-transparent">
-                                    ተ
-                                  </span>
-                                )}
-                                {val === 'A' && (
-                                  <span className="inline-flex items-center justify-center w-5 h-5 rounded bg-rose-600 text-white text-[10px] font-black print:text-black print:bg-transparent">
-                                    ቀ
-                                  </span>
-                                )}
-                                {val === 'E' && (
-                                  <span className="inline-flex items-center justify-center w-5 h-5 rounded bg-amber-500 text-white text-[10px] font-black print:text-black print:bg-transparent">
-                                    ፈ
-                                  </span>
-                                )}
-                                {!val && <span className="text-slate-300 font-normal print:hidden">-</span>}
+                                <input
+                                  id={`att-cell-input-${rowIndex}-${wIndex}`}
+                                  type="text"
+                                  value={displayVal}
+                                  onChange={() => {}}
+                                  onKeyDown={(e) => handleAttendanceKeyDown(e, rowIndex, wIndex, student.id, w)}
+                                  onClick={() => handleCycleStatus(student.id, w)}
+                                  onFocus={(e) => {
+                                    e.target.select();
+                                    setSelectedWeek(w);
+                                  }}
+                                  className={`w-6 h-6 text-center rounded font-black text-[10px] cursor-pointer focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white print:border-none print:bg-transparent ${
+                                    val === 'P'
+                                      ? 'bg-emerald-600 text-white'
+                                      : val === 'A'
+                                      ? 'bg-rose-600 text-white'
+                                      : val === 'E'
+                                      ? 'bg-amber-500 text-white'
+                                      : 'text-slate-300 hover:bg-slate-100 bg-transparent'
+                                  }`}
+                                  placeholder="-"
+                                  title={`${student.name} - ሳምንት ${w}: 1=ተ፣ 0=ቀ፣ 2=ፈ (ጠቅ ያድርጉ ወይም በኪቦርድ ይሙሉ)`}
+                                />
                               </td>
                             );
                           })}
@@ -1113,8 +1274,13 @@ export const AttendanceTab: React.FC<AttendanceTabProps> = ({
                           )}
                         </td>
 
+                        {/* Age */}
+                        <td className="py-2 px-1 border-r border-slate-200 sticky left-[210px] bg-white group-hover:bg-slate-100 z-20 text-slate-300 print:static print:border-slate-900">
+                          -
+                        </td>
+
                         {/* Gender */}
-                        <td className="py-2 px-2 border-r border-slate-200 sticky left-[210px] bg-white group-hover:bg-slate-100 z-20 text-slate-300 print:static print:border-slate-900">
+                        <td className="py-2 px-2 border-r border-slate-200 sticky left-[258px] bg-white group-hover:bg-slate-100 z-20 text-slate-300 print:static print:border-slate-900">
                           -
                         </td>
 

@@ -717,7 +717,7 @@ export default function App() {
   // Navigation tab definitions
   const tabs = [
     { id: 'classesTab', label: 'የክፍል ደረጃዎች & ውጤት', icon: GraduationCap, roles: ['admin', 'leader', 'teacher'] },
-    { id: 'attendanceTab', label: 'የዕለቱ የቀሪዎች ሪፖርት', icon: CalendarCheck2, roles: ['admin', 'leader', 'teacher'] },
+    { id: 'attendanceTab', label: 'የተማሪዎች አተንዳንስ & መቆጣጠሪያ', icon: CalendarCheck2, roles: ['admin', 'leader', 'teacher'] },
     { id: 'choirTab', label: 'የመዘምራንና ኪነ-ጥበብ ቡድኖች', icon: Music, roles: ['admin', 'leader', 'teacher'] },
     { id: 'spiritualTab', label: 'መንፈሳዊ ትምህርት ቡድኖች', icon: BookOpen, roles: ['admin', 'leader', 'teacher'] },
     { id: 'topAchieversTab', label: 'ከ1ኛ - 3ኛ ደረጃዎች', icon: Award, roles: ['admin', 'leader', 'teacher'] },
@@ -830,6 +830,7 @@ export default function App() {
                   onDeleteStudent={handleDeleteStudent}
                   onClearClassStudents={handleClearClassStudents}
                   onClearClassScores={handleClearClassScores}
+                  onGoToAttendance={() => setActiveTab('attendanceTab')}
                   currentUserRole={currentUserRole}
                   loggedInTeacher={loggedInTeacher}
                   subjects={appData.subjects}
@@ -854,6 +855,7 @@ export default function App() {
                   onAddAttendanceBatch={handleAddAttendanceBatch}
                   onDeleteAttendance={handleDeleteAttendance}
                   onAddStudentToClass={handleAddStudentToClass}
+                  onUpdateStudent={handleUpdateStudent}
                   currentUserRole={currentUserRole}
                   loggedInTeacher={loggedInTeacher}
                 />
